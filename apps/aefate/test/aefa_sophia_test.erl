@@ -39,7 +39,7 @@ dummy_trees(Caller, Cache, Stores) ->
     Trees = aec_trees:new_without_backend(),
     Pubkeys = [Caller| [X || X <- maps:keys(Cache)]],
     ATrees = lists:foldl(fun(Pubkey, Acc) ->
-                                 Account = aec_accounts:new(Pubkey, 10000),
+                                 Account = aec_accounts:new(Pubkey, 1000000000000000000000),
                                  aec_accounts_trees:enter(Account, Acc)
                          end, aec_trees:accounts(Trees), Pubkeys),
     CTrees = lists:foldl(fun(Pubkey, Acc) ->
@@ -54,18 +54,24 @@ dummy_trees(Caller, Cache, Stores) ->
     aec_trees:set_contracts(aec_trees:set_accounts(Trees, ATrees), CTrees).
 
 run(Cache, Contract, Function, Arguments) ->
-    {_, Res} = timed_run(Cache, Contract, Function, Arguments),
+    {_, Res} = timed_run(Cache, Contract, Function, Arguments, #{}),
     Res.
 
 run(Cache, Contract, Function, Arguments, Store) ->
     {_, Res} = timed_run(Cache, Contract, Function, Arguments, Store),
     Res.
 
-timed_run(Cache, Contract, Function, Arguments) ->
-    timed_run(Cache, Contract, Function, Arguments, #{}).
+timed_run(Contract, Fun, Args) ->
+  timed_run(Contract, Fun, Args, #{}).
+
+timed_run(Contract, Fun, Args, Options) ->
+    timed_run(get_cache(), Contract, Fun, Args, get_store(), Options).
 
 timed_run(Cache, Contract, Function, Arguments, Store0) ->
-    Spec = #{ store := Store } = make_call_spec(Contract, Function, Arguments, Store0),
+  timed_run(Cache, Contract, Function, Arguments, Store0, #{}).
+
+timed_run(Cache, Contract, Function, Arguments, Store0, Options) ->
+    Spec = #{ store := Store } = make_call_spec(Contract, Function, Arguments, Store0, Options),
     Env = dummy_spec(Cache, #{pad_contract_name(Contract) => Store}),
     try
         timer:tc(fun() -> aefa_fate:run_with_cache(Spec, Env, Cache) end)
@@ -108,37 +114,42 @@ compile_contract(Code, Options) ->
         {error, {type_errors, Err}}
     end.
 
--define(CALL_GAS, 6000000).
+-define(CALL_GAS, 60000000).
 -define(CALL_FEE, 5000000).
 
-make_store(<<"init">>, _) -> aefa_stores:initial_contract_store();
-make_store(_, none) ->
-    case get(contract_store) of
-        undefined -> aefa_stores:initial_contract_store();
-        Store     -> Store
-    end;
-make_store(_, Store) ->
-    maps:fold(fun(Reg, Val, S) ->
-                Key = <<0, (binary:encode_unsigned(Reg))/binary>>,
-                ValBin = aeb_fate_encoding:serialize(Val),
-                aect_contracts_store:put(Key, ValBin, S)
-              end, aefa_stores:initial_contract_store(), Store).
+make_store(_, Store) -> Store.
+%% make_store(<<"init">>, _) -> aefa_stores:initial_contract_store();
+%% make_store(_, none) ->
+%%     case get(contract_store) of
+%%         undefined -> aefa_stores:initial_contract_store();
+%%         Store     -> Store
+%%     end;
+%% make_store(_, Store) ->
+%%     maps:fold(fun(Reg, Val, S) ->
+%%                 Key = <<0, (binary:encode_unsigned(Reg))/binary>>,
+%%                 ValBin = aeb_fate_encoding:serialize(Val),
+%%                 aect_contracts_store:put(Key, ValBin, S)
+%%               end, aefa_stores:initial_contract_store(), Store).
 
-make_call_spec(Contract, Function0, Arguments, Store) ->
+make_call_spec(Contract, Function0, Arguments, Store, Options) ->
     Function = aeb_fate_code:symbol_identifier(Function0),
     EncArgs  = list_to_tuple([aefa_test_utils:encode(A) || A <- Arguments]),
     Calldata = {tuple, {Function, {tuple, EncArgs}}},
     CtStore  = make_store(Function0, Store),
+    SerCalldata = aeb_fate_encoding:serialize(Calldata),
+    io:format("Size calldata: ~p (~p gas)\n", [byte_size(SerCalldata), 20 * byte_size(SerCalldata)]),
     #{ contract   => pad_contract_name(Contract),
        gas        => ?CALL_GAS,
        fee        => ?CALL_FEE,
-       value      => 0,
-       call       => aeb_fate_encoding:serialize(Calldata),
+       value      => maps:get(value, Options, 0),
+       call       => SerCalldata,
        store      => CtStore,
        vm_version => ?VM_FATE_SOPHIA_2,
        allow_init => true
      }.
 
+pad_contract_name(AtomName) when is_atom(AtomName) ->
+    pad_contract_name(atom_to_binary(AtomName, utf8));
 pad_contract_name(Name) ->
     PadSize = 32 - byte_size(Name),
     iolist_to_binary([Name, lists:duplicate(PadSize, "_")]).
@@ -247,6 +258,120 @@ run_call(Code, Fun, Args, Options) ->
 
 run_eunit(Test) ->
     [ begin io:format("~s\n", [Name]), Fun() end || {Name, Fun} <- ?MODULE:Test() ],
+    ok.
+
+setup_contract(Tag, File) ->
+    setup_contract(Tag, File, []).
+
+setup_contract(Tag, File, InitArgs) ->
+    setup_contract(Tag, File, InitArgs, []).
+
+setup_contract(Tag, File, InitArgs, Options) ->
+    {ok, CodeBin} = file:read_file(File),
+    Code = binary_to_list(CodeBin),
+    Contract = pad_contract_name(Tag),
+    NewCache = compile_contracts([{Contract, Code}], Options),
+    add_to_cache(NewCache),
+    case timed_run(Contract, <<"init">>, InitArgs) of
+        {Time, {ok, ES}} ->
+            print_run_stats(Time, ES),
+            {Store1, CtStore} = read_store(Contract, ES),
+            put_store(CtStore),
+            EventMap = maps:from_list(
+                 [{element(2, eblake2:blake2b(32, list_to_binary(Con))), Con}
+                  || {con, _, Con} <- element(2, aeso_scan:scan(Code))]),
+            put_eventmap(Tag, EventMap),
+            io:format("Initial state:\n  ~p\n", [Store1]);
+        {Time, {error, Err, ES}} ->
+            print_run_stats(Time, ES),
+            io:format("~s\n", [Err]),
+            io:format("~p\n", [ES]),
+            {error, Err, [I || {I, _} <- aefa_engine_state:trace(ES)]}
+    end.
+
+
+call_contract(Tag, Fun, Args) ->
+    call_contract(Tag, Fun, Args, #{}).
+
+call_contract(Tag, Fun, Args, Options) ->
+    Contract = pad_contract_name(Tag),
+    case timed_run(Contract, list_to_binary(Fun), Args, Options) of
+        {Time, {ok, ES}} ->
+            print_run_stats(Time, ES),
+            Logs = aefa_engine_state:logs(ES),
+            {Store1, CtStore} = read_store(Contract, ES),
+            put_store(CtStore),
+            [io:format("State:\n  ~p\n", [Store1]) || maps:get(show_state, Options, true)],
+            print_logs(get_eventmap(Tag), Logs),
+            aefa_engine_state:accumulator(ES);
+        {Time, {revert, Reason, ES}} ->
+            print_run_stats(Time, ES),
+            io:format("Revert: ~ts\n", [Reason]),
+            {error, revert};
+        {Time, {error, <<"Out of gas">>, ES}} ->
+            print_run_stats(Time, ES),
+            {error, out_of_gas};
+        {Time, {error, Err, ES}} ->
+            print_run_stats(Time, ES),
+            io:format("~s\n", [Err]),
+            {error, Err, [I || {I, _} <- aefa_engine_state:trace(ES)]}
+    end.
+
+put_cache(C) ->
+    put('contract_cache', C),
+    C.
+
+get_cache() ->
+    case get('contract_cache') of
+        undefined ->
+            #{};
+        Cache ->
+            Cache
+    end.
+
+put_store(S) ->
+    put('contract_store', S),
+    S.
+
+get_store() ->
+    case get('contract_store') of
+        undefined ->
+            aefa_stores:initial_contract_store();
+        Store ->
+            Store
+    end.
+
+put_eventmap(Tag, Map) ->
+    EMap = get_eventmap(),
+    put_eventmap(EMap#{Tag => Map}).
+
+put_eventmap(S) ->
+    put('contract_eventmap', S),
+    S.
+
+get_eventmap(Tag) ->
+    maps:get(Tag, get_eventmap()).
+
+get_eventmap() ->
+    case get('contract_eventmap') of
+        undefined ->
+            #{};
+        Store ->
+            Store
+    end.
+
+add_to_cache(Cache0) ->
+    NewCache = maps:merge(get_cache(), Cache0),
+    put_cache(NewCache).
+
+show_contracts() ->
+    Cache = get_cache(),
+    [ io:format("C: ~140p\n", [C]) || {C, _} <- maps:to_list(Cache) ],
+    ok.
+
+reset() ->
+    erase(contract_store),
+    erase(contract_cache),
     ok.
 
 %% -- Actual tests --
@@ -607,3 +732,177 @@ remote_tests() ->
        []]).
 
 remote_test_() -> mk_test(remote(), remote_tests()).
+
+
+%%% TEST stuff
+-define(DENOM, 1000000000000000000). %% 1AE
+-define(SECRETS, [33330001, 33330002, 33330003, 33330004, 33330005]).
+-define(NULLS, [44440001, 44440002, 44440003, 44440004, 44440005]).
+
+%% 61976 steps / 4983881 gas / 2752245 reductions / 60.69ms
+%% 64892 steps / 14122613 gas / 2793797 reductions / 58.98ms
+
+test() ->
+  Levels = 16,
+  setup(Levels),
+  make_deposits(),
+  make_withdraw(Levels, 2),
+  make_withdraw(Levels, 0),
+  ok.
+
+setup(Levels) ->
+  reset(),
+%%   setup_contract(poseidon, "/Users/hans/Quviq/Aeternity/tornado/bls/poseidon.aes", []),
+  setup_contract(verifier, "/Users/hans/Quviq/Aeternity/tornado/bls/verifier_z.aes", []),
+%%   aefa_sophia_test:setup_contract(tornado, "/Users/hans/Quviq/Aeternity/tornado/bls/tornado.aes",
+%%                                   [?DENOM, Levels, {contract, <<"poseidon________________________">>},
+%%                                                    {contract, <<"verifier________________________">>}]),
+  aefa_sophia_test:setup_contract(tornado, "/Users/hans/Quviq/Aeternity/tornado/bls/tornado.aes",
+                                  [?DENOM, Levels, {contract, <<"verifier________________________">>}]),
+  ok.
+
+make_deposits() ->
+  Notes = [ aeu_poseidon:hash3(N, S) || {N, S} <- lists:zip(?NULLS, ?SECRETS) ],
+
+  [ call_contract(tornado, "deposit", [Note], #{value => ?DENOM, show_state => false}) || Note <- Notes ],
+
+  %% Now fill it with non-used commitments
+%%   [ call_contract(tornado, "deposit", [aeu_poseidon:hash3(X, X)], #{value => ?DENOM, show_state => false})
+%%     || X <- lists:seq(1, 30) ],
+
+  ok.
+
+make_withdraw(Levels, Index) ->
+  NullifierHashes = [ aeu_poseidon:hash3(N, 0) || N <- ?NULLS],
+
+  LastRoot = call_contract(tornado, "getLastRoot", [], #{show_state => false}),
+
+%%   Commitments = call_contract(tornado, "getLeafs", [], #{show_state => false}),
+%%   Leafs = [ L || {L, _Ix} <- lists:sort(fun({_, A}, {_, B}) -> A =< B end, [ T || {tuple, T} <- Commitments ]) ],
+%%   Leafs = [ L || {L, _Ix} <- lists:sort(fun({_, A}, {_, B}) -> A =< B end, maps:to_list(Commitments)) ],
+
+  Leafs = [ aeu_poseidon:hash3(N, S) || {N, S} <- lists:zip(?NULLS, ?SECRETS) ],
+
+  MTree = make_tree(Levels, Leafs),
+  [{_, Root}] = hd(MTree),
+
+  io:format("\n-----\n\nCheck root: ~p == ~p\n", [LastRoot, Root]),
+
+  io:format("\nData for deposit index ~p:\n", [Index]),
+
+  Secret        = lists:nth(Index + 1, ?SECRETS),
+  Nullifier     = lists:nth(Index + 1, ?NULLS),
+  NullifierHash = lists:nth(Index + 1, NullifierHashes),
+
+  io:format("Secret:        ~p\n", [Secret]),
+  io:format("Nullifier:     ~p\n", [Nullifier]),
+  io:format("NullifierHash: ~p\n", [NullifierHash]),
+  io:format("Tree root:     ~p\n", [Root]),
+
+  Path = tree_path(MTree, Index),
+  io:format("Tree elements: [~180p, ...]\n", [hd(Path)]),
+
+
+  Recipient = {address, <<12345:256>>},
+  <<R1:128, R2:128>> = crypto:hash(sha256, aeb_fate_encoding:serialize(Recipient)),
+  io:format("Recipient:     ~p\n", [{R1, R2}]),
+
+  Relayer = {address, <<0:256>>},
+  <<S1:128, S2:128>> = crypto:hash(sha256, aeb_fate_encoding:serialize(Relayer)),
+  io:format("Relayer:       ~p\n", [{S1, S2}]),
+
+  Fee = 0,
+  io:format("Fee:           ~p\n", [Fee]),
+
+  %% ignore relayer for now
+  StringPath = string:join([io_lib:format("~p", [P]) || P <- Path], " "),
+  BitPath = string:join(lists:reverse([ [C] || C <- io_lib:format("~" ++ integer_to_list(Levels) ++ ".2.0b", [Index]) ]), " "),
+  io:format("Tree path:     ~s\n", [BitPath]),
+  WitnessInput = io_lib:format("~p ~p ~p ~p ~p ~p ~p ~p ~p ~s ~s",
+                               [Root, NullifierHash, R1, R2, S1, S2, Fee, Nullifier, Secret, StringPath, BitPath]),
+
+  compute_witness(WitnessInput),
+  calc_proof(),
+  {Proof, _Inputs} = read_proof(),
+
+  io:format("\n-----\n\nCheck that we can't cheat...\n"),
+  Me = {address, <<123456789:256>>},
+  call_contract(tornado, "withdraw", [Proof, Root, NullifierHash, Me, Relayer, Fee], #{show_state => false}),
+
+
+  io:format("\n-----\n\nCalling withdraw...\n"),
+  call_contract(tornado, "withdraw", [Proof, Root, NullifierHash, Recipient, Relayer, Fee], #{show_state => false}),
+
+  ok.
+
+
+%%
+%% Merkle trees
+%%
+-define(ZERO, 16#2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b).
+make_tree(Levels, Leafs) ->
+  Zeros = zeros(Levels, ?ZERO, []),
+  lists:reverse(make_level(Levels + 1, tag(Leafs), Zeros)).
+
+tree_path(Tree, Index) ->
+  RTree = lists:reverse(tl(Tree)),
+  tree_path(Index, RTree, zeros(length(RTree)), []).
+
+tree_path(_, [], _, Acc) -> lists:reverse(Acc);
+tree_path(Ix, [Ls | Tree], [Z | Zs], Acc) ->
+  Adj = if Ix rem 2 == 0 -> Ix + 1; true -> Ix - 1 end,
+  case lists:keyfind(Adj, 1, Ls) of
+    false  -> tree_path(Ix div 2, Tree, Zs, [Z | Acc]);
+    {_, X} -> tree_path(Ix div 2, Tree, Zs, [X | Acc])
+  end.
+
+make_level(0, _, _) -> [];
+make_level(N, Leafs, [Z | Zs]) ->
+  NewLeafs = tag([ aeu_poseidon:hash3(A, B) || {{_, A}, {_, B}} <- mk_pairs(Leafs, {-1, Z}) ]),
+  [Leafs | make_level(N-1, NewLeafs, Zs)].
+
+mk_pairs([], _) -> [];
+mk_pairs([X], Y) -> [{X, Y}];
+mk_pairs([X1, X2 | Xs], Y) -> [{X1, X2} | mk_pairs(Xs, Y)].
+
+tag(Xs) ->
+  lists:zip(lists:seq(0, length(Xs) - 1), Xs).
+
+zeros(Levels) -> zeros(Levels, ?ZERO, []).
+
+zeros(0, Z, Acc) -> lists:reverse([Z | Acc]);
+zeros(N, Z, Acc) -> zeros(N-1, aeu_poseidon:hash3(Z, Z), [Z | Acc]).
+
+
+%%
+%% Hacky zokrates binding
+%%
+-define(ZOKRATES_PATH, "/Users/hans/Quviq/Aeternity/tornado/bls/tornado").
+compute_witness(WitnessStr) ->
+  Cmd = "cd " ++ ?ZOKRATES_PATH ++ "; zokrates compute-witness -i z_tornado -a " ++ WitnessStr,
+
+%%   io:format("Cmd: ~p\n", [Cmd]),
+
+  Res = os:cmd(Cmd),
+
+  io:format("\nWitness result:\n~s", [Res]).
+
+calc_proof() ->
+  Cmd = "cd " ++ ?ZOKRATES_PATH ++ "; zokrates generate-proof -s g16 -i z_tornado",
+  io:format("Generating proof...\n"),
+  os:cmd(Cmd),
+  io:format("... proof done.\n").
+
+read_proof() ->
+  io:format("Reading proof...\n"),
+  {ok, Data} = file:read_file(?ZOKRATES_PATH ++ "/proof.json"),
+
+  Ints = [ binary_to_integer(string:slice(string:trim(S), 2), 16)
+           || S <- string:lexemes(Data, "\n,\""), string:find(S, <<"0x">>) /= nomatch ],
+
+  [AX, AY, BX1, BY1, BX2, BY2, CX, CY | Inputs] = Ints,
+  Proof = {{AX, AY}, {{BX1, BY1}, {BX2, BY2}}, {CX, CY}},
+  io:format("Proof:\n  ~p\n", [Proof]),
+  io:format("Inputs:\n  ~p\n", [Inputs]),
+
+  {Proof, Inputs}.
