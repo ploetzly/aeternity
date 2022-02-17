@@ -136,20 +136,21 @@ jobs:
           only: << pipeline.parameters.tag_regex >>
 
   - slack/on-hold:
-      name: hodl-blue-notification
+      name: hodl-uat-hc-notification
       context: ae-slack
       requires:
         - linux-release-tarball
+        - upload-artifacts-github-release
       filters:
         branches:
           ignore: /.*/
         tags:
           only: << pipeline.parameters.tag_regex >>
 
-  - hodl_blue:
+  - hodl_uat_hc:
       type: approval
       requires:
-        - hodl-blue-notification
+        - hodl-uat-hc-notification
       filters:
         branches:
           ignore: /.*/
@@ -157,39 +158,18 @@ jobs:
           only: << pipeline.parameters.tag_regex >>
 
   - deploy:
-      name: deploy-uat-blue
+      name: deploy-uat-hc-producer
       version: $CIRCLE_TAG
-      env: uat
-      color: blue
+      env: uat-hc
+      kind: producer
+      config_env: uat-hc@producer
       downtime: 1800 #30m
       context:
         - ae-slack
         - ae-vault-node
       requires:
         - linux-release-tarball
-        - hodl_blue
-      filters:
-        branches:
-          ignore: /.*/
-        tags:
-          only: << pipeline.parameters.tag_regex >>
-
-  - slack/on-hold:
-      name: hodl-green-notification
-      context: ae-slack
-      requires:
-        - linux-release-tarball
-        - deploy-uat-blue
-      filters:
-        branches:
-          ignore: /.*/
-        tags:
-          only: << pipeline.parameters.tag_regex >>
-
-  - hodl_green:
-      type: approval
-      requires:
-        - hodl-green-notification
+        - hodl_uat_hc
       filters:
         branches:
           ignore: /.*/
@@ -197,18 +177,18 @@ jobs:
           only: << pipeline.parameters.tag_regex >>
 
   - deploy:
-      name: deploy-uat-green
+      name: deploy-uat-hc-syncing
       version: $CIRCLE_TAG
-      env: uat
-      color: green
+      env: uat-hc
+      kind: syncing
+      config_env: uat-hc@syncing
       downtime: 1800 #30m
       context:
         - ae-slack
         - ae-vault-node
       requires:
         - linux-release-tarball
-        - deploy-uat-blue
-        - hodl_green
+        - hodl_uat_hc
       filters:
         branches:
           ignore: /.*/
