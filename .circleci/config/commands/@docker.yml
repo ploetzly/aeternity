@@ -97,7 +97,10 @@ docker_buildx:
           docker context create aeternity
           docker buildx create --use --platform << pipeline.parameters.buildx-platforms >> aeternity
           docker buildx inspect --builder aeternity --bootstrap
-    - docker_login
+    - run:
+        name: Login to docker.io registry
+        command: |
+          docker login -u $DOCKER_USER -p $DOCKER_PASS
     - unless:
         condition: << parameters.latest >>
         steps:
