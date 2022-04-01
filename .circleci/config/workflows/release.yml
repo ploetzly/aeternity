@@ -282,7 +282,7 @@ jobs:
         tags:
           only: << pipeline.parameters.tag_regex >>
 
-  - docker-image:
+  - docker-buildx:
       name: docker-image-tag
       tag: $CIRCLE_TAG
       context:
@@ -296,7 +296,7 @@ jobs:
         tags:
           only: << pipeline.parameters.tag_regex >>
 
-  - docker-image:
+  - docker-buildx:
       name: docker-image-tag-bundle
       aeplugin_devmode: true
       tag: $CIRCLE_TAG-bundle
@@ -311,7 +311,7 @@ jobs:
         tags:
           only: << pipeline.parameters.tag_regex >>
 
-  - docker-tag:
+  - docker-buildx:
       name: docker-image-latest
       src: $CIRCLE_TAG
       tag: latest
@@ -327,7 +327,7 @@ jobs:
         tags:
           only: << pipeline.parameters.tag_regex >>
 
-  - docker-tag:
+  - docker-buildx:
       name: docker-image-latest-bundle
       src: $CIRCLE_TAG-bundle
       tag: latest-bundle
