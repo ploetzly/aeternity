@@ -3,6 +3,8 @@ FROM aeternity/builder:bionic-otp22 as builder
 # Add required files to download and compile only the dependencies
 ADD rebar.config rebar.lock Makefile rebar3 rebar.config.script /app/
 ENV ERLANG_ROCKSDB_OPTS "-DWITH_SYSTEM_ROCKSDB=ON -DWITH_LZ4=ON -DWITH_SNAPPY=ON -DWITH_BZ2=ON -DWITH_ZSTD=ON"
+# Multi-platform support otherwise cuckoo tries to build with -m64 and gets error
+ENV GPP_ARCH_FLAGS "-march=native -x c++"
 
 RUN cd /app && make prod-compile-deps
 # Add the whole project and compile aeternity itself.
