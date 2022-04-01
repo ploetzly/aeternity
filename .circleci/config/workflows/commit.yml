@@ -356,6 +356,13 @@ jobs:
           only:
             - << pipeline.parameters.master_branch >>
 
+  - docker-buildx:
+      name: docker-buildx-mainline
+      context:
+        - ae-slack
+        - ae-node-builds
+      tag: $CIRCLE_BRANCH
+
   - deploy:
       name: deploy-next
       version: $CIRCLE_SHA1
