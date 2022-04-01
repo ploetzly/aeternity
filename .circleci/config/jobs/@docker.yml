@@ -35,3 +35,18 @@ docker-tag:
     - docker_push:
         tag: << parameters.tag >>
     - fail_notification
+
+docker-buildx:
+  executor: buildx
+  parameters:
+    tag:
+      type: string
+    latest:
+      type: boolean
+      default: false
+  steps:
+    - fixed_checkout
+    - docker_buildx:
+        tag: << parameters.tag >>
+        latest: << parameters.latest >>
+    - fail_notification

@@ -59,3 +59,9 @@ machine_2004:
   environment:
     OTP_VERSION: 22.3.4.9
     LIBSODIUM_VERSION: "1.0.16"
+
+buildx:
+  machine:
+    image: ubuntu-2004:current
+    resource_class: xlarge
+  working_directory: ~/builder
