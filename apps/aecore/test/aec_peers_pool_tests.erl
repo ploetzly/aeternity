@@ -34,6 +34,7 @@
 -export([seed_process_random/0,
          random_peer/0,
          random_peer/1,
+         random_peer/2,
          random_address/0
 ]).
 
@@ -941,10 +942,10 @@ verification_canceled() ->
     Pool1 = new(PoolOpts),
     Now = erlang:system_time(millisecond),
 
-    Peer1 = random_peer(),
+    Peer1 = random_peer(1),
     Id1 = aec_peer:id(Peer1),
 
-    Peer2 = random_peer(),
+    Peer2 = random_peer(2),
     Id2 = aec_peer:id(Peer2),
 
 
@@ -979,14 +980,14 @@ update_ignored() ->
     Pool1 = new(PoolOpts),
     Now = erlang:system_time(millisecond),
 
-    Peer1 = random_peer(),
+    Peer1 = random_peer(1),
     Id1 = aec_peer:id(Peer1),
     Peer1DifferentAddress = random_peer(#{pubkey => Id1}),
     Peer1Trusted = random_peer(#{pubkey => Id1,
                                  address => aec_peer:ip(Peer1),
                                  trusted => true}), %% it is false by default
 
-    Peer2 = random_peer(),
+    Peer2 = random_peer(2),
     Id2 = aec_peer:id(Peer2),
 
     {unverified, Pool2} =
@@ -1034,10 +1035,10 @@ downgrade_to_bucket_with_no_eviction_possible() ->
     Pool1 = new(PoolOpts),
     Now = erlang:system_time(millisecond),
 
-    RandomPeer1 = random_peer(),
+    RandomPeer1 = random_peer(1),
     Id1 = aec_peer:id(RandomPeer1),
 
-    RandomPeer2 = random_peer(),
+    RandomPeer2 = random_peer(2),
     Id2 = aec_peer:id(RandomPeer2),
 
     {unverified, Pool2} =
@@ -1250,7 +1251,7 @@ unverified_reference_eviction() ->
     Pool1 = new(PoolOpts),
     Now = erlang:system_time(millisecond),
 
-    Peer1 = random_peer(),
+    Peer1 = random_peer(1),
     Id1 = aec_peer:id(Peer1),
     Addr1 = aec_peer:ip(Peer1),
     Src1a = aec_peer:source(Peer1),
@@ -1271,7 +1272,7 @@ unverified_reference_eviction() ->
     ?assertEqual(1, count(Pool3, all, both)),
     ?assertEqual(1, count(Pool3, available, both)),
 
-    Peer2 = random_peer(),
+    Peer2 = random_peer(2),
     Id2 = aec_peer:id(Peer2),
 
     {unverified, Pool4} = update(Pool3, Now, Peer2),
@@ -2071,12 +2072,17 @@ unver_add_refs(Pool, Now, Peer0, SourceAtom, Count, Max) ->
     end.
 
 random_peer() ->
-    random_peer(#{}).
+    random_peer(1, #{}).
 
-random_peer(Opts) ->
+random_peer(Index) ->
+    random_peer(Index, #{}).
+
+random_peer(Index, Opts) ->
+    StartPort = 4000 + (Index - 1) * 100,
+    EndPort = 4000 + (Index * 100) - 1,
     PeerInfo =
         maps:merge(#{ pubkey => random_peer_id(), host => <<>>,
-                      port => rand_int(4000, 4999) },
+                      port => rand_int(StartPort, EndPort) },
                    Opts),
     aec_peer:new(maps:get(address, Opts, random_address()),
                  maps:get(source, Opts, random_address()), 

@@ -886,7 +886,7 @@ restart_with_different_defaults(Config) ->
     Dev1 = dev1,
     N1 = aecore_suite_utils:node_name(Dev1),
     aecore_suite_utils:stop_node(Dev1, Config),
-    Peer = random_peer(),
+    Peer = random_peer(1),
     NodeCfg0 = aecore_suite_utils:node_config(Dev1, Config),
     NodeCfg = NodeCfg0#{<<"peers">> => [aec_peer:peer_config_info(Peer)],
                           <<"include_default_peers">> => false},
@@ -904,9 +904,9 @@ restart_with_different_defaults(Config) ->
 start_with_trusted_peers(Config) ->
     Dev1 = dev1,
     N1 = aecore_suite_utils:node_name(Dev1),
-    Peer1 = random_peer(),
-    Peer2 = random_peer(),
-    Peer3 = random_peer(),
+    Peer1 = random_peer(1),
+    Peer2 = random_peer(2),
+    Peer3 = random_peer(3),
 
     NodeCfg = aecore_suite_utils:node_config(Dev1, Config),
     Peers = [encode_peer_for_config(Peer1),
@@ -952,10 +952,10 @@ add_and_delete_untrusted_peers_and_restart(Config) ->
     0 = rpc:call(N1, aec_peers, count, [unverified], 5000),
 
     %% add an untrusted peer
-    Peer1 = random_peer(),
-    Peer2 = random_peer(),
-    Peer3 = random_peer(),
-    Peer4 = random_peer(),
+    Peer1 = random_peer(1),
+    Peer2 = random_peer(2),
+    Peer3 = random_peer(3),
+    Peer4 = random_peer(4),
     Add =
         fun(P) ->
             ok = rpc:call(N1, aec_peers, add_peers, [aec_peer:source(P),
@@ -1049,8 +1049,8 @@ trusted_peer_is_untrusted_after_a_restart(Config) ->
     0 = rpc:call(N1, aec_peers, count, [unverified], 5000),
 
     %% add an untrusted peer
-    Peer1 = random_peer(),
-    Peer2 = random_peer(),
+    Peer1 = random_peer(1),
+    Peer2 = random_peer(2),
     ok = rpc:call(N1, aec_peers, add_peers, [aec_peer:source(Peer1),
                                             [aec_peer:info(Peer1)
                                             ]]),
@@ -1245,9 +1245,9 @@ encode_peer_for_config(Peer) ->
     Port = integer_to_binary(aec_peer:port(Peer)),
     <<"aenode://", PK/binary, "@", Host/binary, ":", Port/binary>>.
 
-random_peer() ->
-    aec_peers_pool_tests:random_peer(#{host    => <<"127.0.0.1">>,
-                                       address => {127,0,0,1}}).
+random_peer(N) ->
+    aec_peers_pool_tests:random_peer(N, #{host    => <<"127.0.0.1">>,
+                                          address => {127,0,0,1}}).
 
 assert_all_peers(N1, PeerPool, ExpectedPeers) ->
     GetInfos= fun(Peers) -> lists:sort([aec_peer:info(P) || P <- Peers]) end,
