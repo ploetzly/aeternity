@@ -365,8 +365,8 @@ peers_test_() ->
      ]}.
 
 untrusted_peer() ->
-    aec_peers_pool_tests:random_peer(#{trusted => false}).
+    aec_peers_pool_tests:random_peer(1, #{trusted => false}).
 
 trusted_peer() ->
-    aec_peers_pool_tests:random_peer(#{trusted => true}).
+    aec_peers_pool_tests:random_peer(1, #{trusted => true}).
 
