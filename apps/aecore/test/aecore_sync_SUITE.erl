@@ -968,7 +968,7 @@ add_and_delete_untrusted_peers_and_restart(Config) ->
     Add(Peer4),
     timer:sleep(100),
     0 = rpc:call(N1, aec_peers, count, [verified], 5000),
-    4 = rpc:call(N1, aec_peers, count, [unverified], 5000),
+    {ok, 4} = expect_val(N1, aec_peers, count, [unverified], 4, 5000),
 
     assert_all_peers(N1, verified, []),
     assert_all_peers(N1, unverified, [Peer1, Peer2, Peer3, Peer4]),
@@ -1059,7 +1059,7 @@ trusted_peer_is_untrusted_after_a_restart(Config) ->
                                             ]]),
     timer:sleep(100),
     0 = rpc:call(N1, aec_peers, count, [verified], 5000),
-    2 = rpc:call(N1, aec_peers, count, [unverified], 5000),
+    {ok, 2} = expect_val(N1, aec_peers, count, [unverified], 2, 5000),
     assert_all_peers(N1, verified, []),
     assert_all_peers(N1, unverified, [Peer1, Peer2]),
     Dev2 = dev2,
