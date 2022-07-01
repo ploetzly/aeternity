@@ -20,6 +20,7 @@ jobs:
         branches:
           only:
             - << pipeline.parameters.master_branch >>
+            - revert_commits
 
   - test:
       context: ae-slack
@@ -275,6 +276,7 @@ jobs:
           only:
             - /releases\/.*/
             - << pipeline.parameters.master_branch >>
+            - revert_commits
 
   - macos-tarball:
       name: macos-tarball-bundle
@@ -286,6 +288,7 @@ jobs:
           only:
             - /releases\/.*/
             - << pipeline.parameters.master_branch >>
+            - revert_commits
 
   - publish-build-packages:
       requires:
