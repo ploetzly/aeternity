@@ -51,7 +51,7 @@ ae_sim_test_() ->
                     lists:foreach(
                         fun(#{host := Host, port := Port,
                             user := User, password := Password}) ->
-                            ?assertMatch({ok, _TopHash}, aehttpc_aeternity:get_latest_block(Host, Port, User, Password, <<"Seed">>))
+                            ?assertMatch({ok, _TopHash, _PrevHash, _Height}, aehttpc_aeternity:get_latest_block(Host, Port, User, Password, <<"Seed">>))
                         end, ae_parent_http_specs()),
                     ok
             end},
@@ -66,7 +66,7 @@ ae_sim_test_() ->
                             aec_chain_sim:add_keyblock(SimName),
                             %% Post our local top hash as the commitment
                             Commitment = <<"kh_deadbeef">>,
-                            {ok, TopHash} = aehttpc_aeternity:get_latest_block(Host, Port, User, Password, <<"Seed">>),
+                            {ok, TopHash, PrevHash, Height} = aehttpc_aeternity:get_latest_block(Host, Port, User, Password, <<"Seed">>),
                             ok = aehttpc_aeternity:post_commitment(Host, Port, StakerPubKey, StakerPrivKey, CommitmentPubKey, Commitment),
                             ?assertMatch({ok, #{micro_blocks := []}}, aec_chain_sim:get_current_generation(SimName)),
                             %% Call the simulator directly to force our Tx in a block
@@ -83,6 +83,7 @@ ae_sim_test_() ->
                             TopHeight = aec_chain_sim:get_height(SimName),
                             %% Top here is the keyblock we added after the microblock with our Txs, so
                             %% we need to look in the height one below top
+                            ?assertEqual(TopHeight, Height + 2),
                             {ok, [{Acct, Payload}]} = aehttpc_aeternity:get_commitment_tx_at_height(Host, Port, User, Password, <<"Seed">>, TopHeight - 2, CommitmentPubKey)
                         end, ae_parent_http_specs()),
                     ok
