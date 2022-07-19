@@ -4,9 +4,9 @@
 
 %% Required exports for hyperchain:
 -export([get_latest_block/5,
-        get_commitment_tx_in_block/7,
-        get_commitment_tx_at_height/7,
-        post_commitment/6]).
+         get_commitment_tx_in_block/7,
+         get_commitment_tx_at_height/7,
+         post_commitment/6]).
 
 %% @doc fetch latest top hash
 get_latest_block(Host, Port, _User, _Password, _Seed) ->
