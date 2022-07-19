@@ -736,11 +736,17 @@ node_config(PotentialStakers, ConsensusModule) ->
                                     <<"rewards_contract">> => aeser_api_encoder:encode(contract_pubkey, staking_contract_address()),
                                     <<"contract_owner">> => aeser_api_encoder:encode(account_pubkey,?OWNER_PUBKEY),
                                     <<"expected_key_block_rate">> => 2000,
-                                    <<"stakers">> => Stakers},
-                                  <<"parent_chain">> =>
-                                    #{<<"type">> => <<"AE">>,
-                                      <<"hosts">> => []
-                                     }}}},
+                                    <<"stakers">> => Stakers,
+                                    <<"parent_chain">> =>
+                                        #{<<"type">> => <<"AE">>,
+                                        <<"fetch_interval">> => 1000,
+                                        <<"nodes">> =>
+                                            [#{<<"host">> => <<"127.0.0.1">>,
+                                                <<"port">> => aecore_suite_utils:external_api_port(?PARENT_CHAIN_NODE1),
+                                                <<"user">> => <<"test">>,
+                                                <<"password">> => <<"Pass">>}
+                                            ]
+                                         }}}}},
         <<"fork_management">> =>
             #{<<"network_id">> => <<"this_will_be_overwritten_runtime">>},
         <<"mining">> =>

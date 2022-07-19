@@ -80,7 +80,11 @@ can_be_turned_off() -> false.
 assert_config(_Config) -> ok.
 
 start(Config) ->
-    #{<<"stakers">> := StakersEncoded} = Config,
+    #{<<"stakers">> := StakersEncoded,
+      <<"parent_chain">> :=
+        #{<<"type">> := PCType,
+          <<"fetch_interval">> := FetchInterval,
+          <<"nodes">> := Nodes0}} = Config,
     Stakers =
         lists:map(
             fun(#{<<"pub">> := EncodedPubkey, <<"priv">> := EncodedPrivkey}) ->
@@ -98,6 +102,24 @@ start(Config) ->
         {Mod, {Mod, start_link, [StakersMap]}, permanent, 3000, worker, [Mod]},
     aec_consensus_sup:start_child(OldSpec),
     lager:debug("Stakers: ~p", [StakersMap]),
+    ParentConnMod =
+        case PCType of
+            <<"AE">> -> aehttpc_aeternity
+        end,
+    ParentHosts = 
+        lists:map(
+            fun(#{<<"host">> := Host,
+                  <<"port">> := Port,
+                  <<"user">> := User,
+                  <<"password">> := Pass
+                }) ->
+                #{host => Host,
+                  port => Port,
+                  user => User,
+                  password => Pass}
+            end,
+            Nodes0),
+    aec_parent_connector:start_link(ParentConnMod, FetchInterval, ParentHosts),
     ok.
 
 stop() -> ok.
