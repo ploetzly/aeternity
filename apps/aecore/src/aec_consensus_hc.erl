@@ -1,7 +1,7 @@
 %%% -*- erlang-indent-level: 4; indent-tabs-mode: nil -*-
 %%% -------------------------------------------------------------------
-%%% @copyright (C) 2022, Aeternity Anstalt
-%%% @doc Consensus module for consensus for HyperChains
+%%% @copyright (C) 2022, Aeternity
+%%% @doc Consensus module for HyperChains consensus
 %%% @end
 %%% -------------------------------------------------------------------
 -module(aec_consensus_hc).
@@ -14,6 +14,8 @@
 -define(TAG, 1337). %% TODO: remove this
 -define(SIGNATURE_SIZE, 16).
 -define(ETS_CACHE_TABLE, ?MODULE).
+-define(ELECTION_CONTRACT, election).
+-define(REWARDS_CONTRACT, rewards).
 
 %% API
 -export([ can_be_turned_off/0
@@ -124,9 +126,10 @@ dirty_validate_micro_node_with_ctx(_Node, _Block, _Ctx) -> ok.
 %% Custom state transitions
 state_pre_transform_key_node_consensus_switch(_Node, Trees) -> Trees.
 state_pre_transform_key_node(Node, Trees) ->
-    {ok, CD} = aeb_fate_abi:create_calldata("elect", []),
+    {ok, CD} = aeb_fate_abi:create_calldata("elect",
+                                            [aefa_fate_code:encode_arg({string, <<"asdf">>})]),
     CallData = aeser_api_encoder:encode(contract_bytearray, CD),
-    case call_consensus_contract(Node, Trees, CallData, "elect()") of
+    case call_consensus_contract(?ELECTION_CONTRACT, Node, Trees, CallData, "elect(asdf)") of
         {ok, Trees1, _} ->
         aeu_ets_cache:reinit(
             ?ETS_CACHE_TABLE,
@@ -146,7 +149,7 @@ state_grant_reward(Beneficiary, Node, Trees, Amount) ->
     {ok, CD} = aeb_fate_abi:create_calldata(
                  "reward", [aefa_fate_code:encode_arg({address, Beneficiary})]),
     CallData = aeser_api_encoder:encode(contract_bytearray, CD),
-    case call_consensus_contract(
+    case call_consensus_contract(?REWARDS_CONTRACT,
            Node, Trees, CallData,
            ["reward(", aeser_api_encoder:encode(account_pubkey, Beneficiary), ")"], Amount) of
         {ok, Trees1, _} -> Trees1;
@@ -268,15 +271,29 @@ key_header_difficulty(_) ->
     ?TAG.
 
 %% This is initial height; if neeeded shall be reinit at fork height
-contract_pubkey() ->
+election_contract_pubkey() ->
     aeu_ets_cache:get(
       ?ETS_CACHE_TABLE,
-      contract_pubkey,
+      election_contract_pubkey,
       fun() ->
               {ok, EncContractId} =
                   aeu_env:user_config([<<"chain">>, <<"consensus">>,
                                        <<"0">>,
-                                       <<"config">>, <<"consensus_contract">>]),
+                                       <<"config">>, <<"election_contract">>]),
+              {ok, Pubkey}   = aeser_api_encoder:safe_decode(contract_pubkey,
+                                                             EncContractId),
+              Pubkey
+      end).
+
+rewards_contract_pubkey() ->
+    aeu_ets_cache:get(
+      ?ETS_CACHE_TABLE,
+      rewards_contract_pubkey,
+      fun() ->
+              {ok, EncContractId} =
+                  aeu_env:user_config([<<"chain">>, <<"consensus">>,
+                                       <<"0">>,
+                                       <<"config">>, <<"rewards_contract">>]),
               {ok, Pubkey}   = aeser_api_encoder:safe_decode(contract_pubkey,
                                                              EncContractId),
               Pubkey
@@ -311,21 +328,25 @@ expected_key_block_rate() ->
       end).
 
 
-call_consensus_contract(Node, Trees, EncodedCallData, Keyword) ->
-    call_consensus_contract(Node, Trees, EncodedCallData, Keyword, 0).
+call_consensus_contract(Contract, Node, Trees, EncodedCallData, Keyword) ->
+    call_consensus_contract(Contract, Node, Trees, EncodedCallData, Keyword, 0).
 
-call_consensus_contract(Node, Trees, EncodedCallData, Keyword, Amount) ->
+call_consensus_contract(Contract, Node, Trees, EncodedCallData, Keyword, Amount) ->
     Header = aec_block_insertion:node_header(Node),
     TxEnv = aetx_env:tx_env_from_key_header(
               Header, aec_block_insertion:node_hash(Node),
               aec_block_insertion:node_time(Node), aec_block_insertion:node_prev_hash(Node)),
-    call_consensus_contract_(TxEnv, Trees, EncodedCallData, Keyword, Amount).
+    call_consensus_contract_(Contract, TxEnv, Trees, EncodedCallData, Keyword, Amount).
 
-call_consensus_contract_(TxEnv, Trees, EncodedCallData, Keyword, Amount) ->
+call_consensus_contract_(ContractType, TxEnv, Trees, EncodedCallData, Keyword, Amount) ->
     Height = aetx_env:height(TxEnv),
     lager:debug("Height ~p, calling ~s with amount ~p aettos, encoded ~p",
                [Height, Keyword, Amount, EncodedCallData]),
-    ContractPubkey = contract_pubkey(),
+    ContractPubkey =
+        case ContractType of
+            ?ELECTION_CONTRACT -> election_contract_pubkey();
+            ?REWARDS_CONTRACT -> rewards_contract_pubkey()
+        end,
     OwnerPubkey = contract_owner(),
     Contract = aect_state_tree:get_contract(ContractPubkey,
                                             aec_trees:contracts(Trees)),
@@ -374,7 +395,7 @@ beneficiary_() ->
     %% call elect_next
     {ok, CD} = aeb_fate_abi:create_calldata("leader", []),
     CallData = aeser_api_encoder:encode(contract_bytearray, CD),
-    case call_consensus_contract_(TxEnv, Trees, CallData, "leader()", 0) of
+    case call_consensus_contract_(?ELECTION_CONTRACT, TxEnv, Trees, CallData, "leader()", 0) of
         {ok, _Trees1, Call} ->
             {address, Leader} = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
             {ok, Leader};
@@ -386,10 +407,14 @@ beneficiary_() ->
 
 next_beneficiary() ->
     {TxEnv, Trees} = aetx_env:tx_env_and_trees_from_top(aetx_transaction),
-    %% call elect_next
-    {ok, CD} = aeb_fate_abi:create_calldata("elect_next", []),
+    %% call elect_at_height
+    Height   = aetx_env:height(TxEnv) + 1,
+    ParentHash = "asdf",
+    {ok, CD} = aeb_fate_abi:create_calldata("elect_at_height",
+                                            [aefa_fate_code:encode_arg({integer, Height}),
+                                             aefa_fate_code:encode_arg({string, list_to_binary(ParentHash)})]),
     CallData = aeser_api_encoder:encode(contract_bytearray, CD),
-    case call_consensus_contract_(TxEnv, Trees, CallData, "elect_next()", 0) of
+    case call_consensus_contract_(?ELECTION_CONTRACT, TxEnv, Trees, CallData, "elect_at_height(" ++ integer_to_list(Height)  ++ ", " ++ ParentHash ++ ")", 0) of
         {ok, _Trees1, Call} ->
             {address, Leader} = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
             SignModule = get_sign_module(),
@@ -411,7 +436,7 @@ is_leader_valid(Node, Trees, TxEnv) ->
     Header = aec_block_insertion:node_header(Node),
     {ok, CD} = aeb_fate_abi:create_calldata("leader", []),
     CallData = aeser_api_encoder:encode(contract_bytearray, CD),
-    case call_consensus_contract_(TxEnv, Trees, CallData, "leader()", 0) of
+    case call_consensus_contract_(?ELECTION_CONTRACT, TxEnv, Trees, CallData, "leader()", 0) of
         {ok, _Trees1, Call} ->
             {address, ExpectedLeader} = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
             Leader = aec_headers:miner(Header),

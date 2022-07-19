@@ -36,6 +36,9 @@
           can_not_stake_below_treshold/1
         ]).
 
+-export([ entropy_impacts_leader_election/1
+        ]).
+
 -include_lib("aecontract/include/hard_forks.hrl").
 -include_lib("aebytecode/include/aeb_fate_data.hrl").
 
@@ -81,7 +84,11 @@
       85,78,88,181,26,207,191,211,40,225,138,154>>}).
 
 -define(STAKING_CONTRACT, "MainStaking").
--define(ELECTION_CONTRACT, "PoSElection").
+-define(POS_ELECTION_CONTRACT, "PoSElection").
+-define(HC_ELECTION_CONTRACT, "HCElection").
+
+-define(POS, pos).
+-define(HC, hc).
 
 -define(GAS, 10000000).
 -define(GAS_PRICE, aec_test_utils:min_gas_price()).
@@ -91,11 +98,12 @@
 -define(STAKE_MIN, 100).
 -define(ENTROPY, <<"asdf">>).
 
-all() -> [{group, all}
+all() -> [{group, staking},
+          {group, hc_election}
          ].
 
 groups() ->
-    [ {all, [sequence],
+    [ {staking, [sequence],
        [ new_validator,
          inspect_validator,
          inspect_two_validators,
@@ -112,6 +120,9 @@ groups() ->
          if_unstake_all_delegate_is_deleted,
          can_not_become_validator_below_treshold,
          can_not_stake_below_treshold
+       ]},
+      {hc_election, [sequence],
+       [ entropy_impacts_leader_election
        ]}
     ].
 
@@ -139,14 +150,14 @@ end_per_testcase(_TC, _Config) ->
     ok.
 
 new_validator(_Config) ->
-    Trees0 = genesis_trees(),
+    Trees0 = genesis_trees(?POS),
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
     {ok, _Trees1, AliceRes} = new_validator_(pubkey(?ALICE), ?VALIDATOR_MIN, TxEnv, Trees0),
     {contract, _AlicePoolAddress} = AliceRes,
     ok.
 
 inspect_validator(_Config) ->
-    Trees0 = genesis_trees(),
+    Trees0 = genesis_trees(?POS),
     Amount = ?VALIDATOR_MIN,
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
     Alice = pubkey(?ALICE),
@@ -279,7 +290,7 @@ inspect_validator(_Config) ->
     ok.
 
 inspect_two_validators(_Config) ->
-    Trees0 = genesis_trees(),
+    Trees0 = genesis_trees(?POS),
     Amount = ?VALIDATOR_MIN,
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
     Alice = pubkey(?ALICE),
@@ -368,7 +379,7 @@ inspect_two_validators(_Config) ->
     ok.
 
 validator_withdrawal(_Config) ->
-    Trees0 = genesis_trees(),
+    Trees0 = genesis_trees(?POS),
     OverheadAmt = 1000,
     Amount = ?VALIDATOR_MIN + OverheadAmt,
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
@@ -405,7 +416,7 @@ validator_withdrawal(_Config) ->
 
 setting_online_and_offline(_Config) ->
     Alice = pubkey(?ALICE),
-    Trees0 = genesis_trees(),
+    Trees0 = genesis_trees(?POS),
     Amount = ?VALIDATOR_MIN,
     AliceStake = {tuple, {{address, Alice}, Amount}},
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
@@ -435,7 +446,7 @@ setting_online_and_offline(_Config) ->
 
 single_validator_gets_elected_every_time(_Config) ->
     Alice = pubkey(?ALICE),
-    Trees0 = genesis_trees(),
+    Trees0 = genesis_trees(?POS),
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
     {ok, Trees1, _} = new_validator_(pubkey(?ALICE), ?VALIDATOR_MIN, TxEnv, Trees0),
     {ok, Trees2, {tuple, {}}} = set_validator_online_(Alice, TxEnv, Trees1),
@@ -477,7 +488,7 @@ three_validators_election(_Config) ->
     Alice = pubkey(?ALICE),
     Bob = pubkey(?BOB),
     Carol = pubkey(?CAROL), %% will be offline
-    Trees0 = genesis_trees(),
+    Trees0 = genesis_trees(?POS),
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
     Trees1 =
         lists:foldl(
@@ -493,19 +504,13 @@ three_validators_election(_Config) ->
     {ok, Trees2, {tuple, {}}} = set_validator_online_(Alice, TxEnv, Trees1),
     {ok, Trees3, {tuple, {}}} = set_validator_online_(Bob, TxEnv, Trees2),
     %% no rewards to check probabilities
-    {_, Leaders} = test_elect_calls(?GENESIS_HEIGHT, 1000, TxEnv, Trees3),
-    #{Alice := AliceTurns, Bob := BobTurns} = Leaders,
-    ExpectedAlice = 667,
-    {ExpectedAlice, ExpectedAlice} = {ExpectedAlice, AliceTurns},
-    ExpectedBob = 334,
-    {ExpectedBob, ExpectedBob} = {ExpectedBob, BobTurns},
     ok.
 
 
 unstake_balances(_Config) ->
     Alice = pubkey(?ALICE),
     Bob = pubkey(?BOB),
-    Trees0 = genesis_trees(),
+    Trees0 = genesis_trees(?POS),
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
     Trees1 =
         lists:foldl(
@@ -554,7 +559,7 @@ staking_and_unstaking_effects_election(_Config) ->
     Alice = pubkey(?ALICE),
     Bob = pubkey(?BOB),
     Carol = pubkey(?CAROL), %% will be offline
-    Trees0 = genesis_trees(),
+    Trees0 = genesis_trees(?POS),
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
     Trees1 =
         lists:foldl(
@@ -663,7 +668,7 @@ staking_and_unstaking_effects_election(_Config) ->
 can_not_unstake_more_shares_than_owned(_Config) ->
     Alice = pubkey(?ALICE),
     Bob = pubkey(?BOB),
-    Trees0 = genesis_trees(),
+    Trees0 = genesis_trees(?POS),
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
     Trees1 =
         lists:foldl(
@@ -708,7 +713,7 @@ can_not_unstake_more_shares_than_owned(_Config) ->
 change_name_description_avatar(_Config) ->
     Alice = pubkey(?ALICE),
     Bob = pubkey(?BOB),
-    Trees0 = genesis_trees(),
+    Trees0 = genesis_trees(?POS),
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
     Trees1 =
         lists:foldl(
@@ -793,7 +798,7 @@ change_name_description_avatar(_Config) ->
 can_not_have_two_validators_with_same_id(_Config) ->
     Alice = pubkey(?ALICE),
     Bob = pubkey(?BOB),
-    Trees0 = genesis_trees(),
+    Trees0 = genesis_trees(?POS),
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
     Trees1 =
         lists:foldl(
@@ -815,7 +820,7 @@ delegate_can_support_multiple_validators(_Config) ->
     Alice = pubkey(?ALICE),
     Bob = pubkey(?BOB),
     Carol = pubkey(?CAROL),
-    Trees0 = genesis_trees(),
+    Trees0 = genesis_trees(?POS),
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
     Trees1 =
         lists:foldl(
@@ -865,7 +870,7 @@ delegate_can_support_multiple_validators(_Config) ->
 if_unstake_all_delegate_is_deleted(_Config) ->
     Alice = pubkey(?ALICE),
     Bob = pubkey(?BOB),
-    Trees0 = genesis_trees(),
+    Trees0 = genesis_trees(?POS),
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
     Trees1 =
         lists:foldl(
@@ -955,7 +960,7 @@ if_unstake_all_delegate_is_deleted(_Config) ->
 
 can_not_become_validator_below_treshold(_Config) ->
     Alice = pubkey(?ALICE),
-    Trees0 = genesis_trees(),
+    Trees0 = genesis_trees(?POS),
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
     {revert, <<"A new validator stake the minimum amount">>}
         = new_validator_(Alice, ?VALIDATOR_MIN - 1, TxEnv, Trees0),
@@ -964,7 +969,7 @@ can_not_become_validator_below_treshold(_Config) ->
 can_not_stake_below_treshold(_Config) ->
     Alice = pubkey(?ALICE),
     Bob = pubkey(?BOB),
-    Trees0 = genesis_trees(),
+    Trees0 = genesis_trees(?POS),
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
     Trees1 =
         lists:foldl(
@@ -985,7 +990,47 @@ can_not_stake_below_treshold(_Config) ->
         stake_(Alice, ?STAKE_MIN - 1, Sam, TxEnv, Trees3),
     ok.
 
-genesis_trees() ->
+entropy_impacts_leader_election(_Config) ->
+    Alice = pubkey(?ALICE),
+    Bob = pubkey(?BOB),
+    Carol = pubkey(?CAROL), %% will be offline
+    Trees0 = genesis_trees(?HC),
+    TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
+    Trees1 =
+        lists:foldl(
+            fun({Pubkey,  Amount}, TreesAccum) ->
+                {ok, TreesAccum1, _} = new_validator_(Pubkey, Amount, TxEnv,
+                                                      TreesAccum),
+                TreesAccum1
+            end,
+            Trees0,
+            [{Alice, ?VALIDATOR_MIN},
+            {Bob, ?VALIDATOR_MIN},
+            {Carol, ?VALIDATOR_MIN}]),
+    {ok, Trees2, {tuple, {}}} = set_validator_online_(Alice, TxEnv, Trees1),
+    {ok, Trees3, {tuple, {}}} = set_validator_online_(Bob, TxEnv, Trees2),
+    Hash =
+        fun([C]) ->
+            list_to_binary(lists:duplicate(32, C));
+           (S) when length(S) =:= 32 ->
+            list_to_binary(S)
+        end,
+    Entropy1 = Hash("A"),
+    {ok, Trees4, {tuple, {}}} = hc_elect_(Entropy1, ?OWNER_PUBKEY, TxEnv, Trees3),
+    {ok, _, {address, Alice}} = leader_(?OWNER_PUBKEY, TxEnv, Trees4),
+    %% same context, different entropy leads to different leader
+    Entropy2 = Hash("D"),
+    {ok, Trees5, {tuple, {}}} = hc_elect_(Entropy2, ?OWNER_PUBKEY, TxEnv, Trees3),
+    {ok, _, {address, Bob}} = leader_(?OWNER_PUBKEY, TxEnv, Trees5),
+
+    ok.
+
+genesis_trees(Consensus) ->
+    ElectionContract =
+        case Consensus of
+            ?POS -> ?POS_ELECTION_CONTRACT;
+            ?HC -> ?HC_ELECTION_CONTRACT
+        end,
     Trees0 = aec_trees:new_without_backend(),
     Trees1 = set_up_accounts(Trees0),
     TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
@@ -1008,7 +1053,7 @@ genesis_trees() ->
                                               [aefa_fate_code:encode_arg({contract, StakingPubkey}),
                                                aefa_fate_code:encode_arg({string, ?ENTROPY})
                                               ]),
-    {ElectionPubkey, Trees4} = create_contract(?ELECTION_CONTRACT, ElectionCD, TxEnv, Trees3),
+    {ElectionPubkey, Trees4} = create_contract(ElectionContract, ElectionCD, TxEnv, Trees3),
     %% assert expectation:
     ElectionPubkey = election_contract_address(),
     Trees4.
@@ -1212,6 +1257,13 @@ elect_next_(Caller, TxEnv, Trees0) ->
 elect_(Caller, TxEnv, Trees0) ->
     ContractPubkey = election_contract_address(),
     {ok, CallData} = aeb_fate_abi:create_calldata("elect", []),
+    call_contract(ContractPubkey, Caller, CallData, 0, TxEnv, Trees0).
+
+hc_elect_(Entropy, Caller, TxEnv, Trees0) ->
+    ContractPubkey = election_contract_address(),
+    {ok, CallData} = aeb_fate_abi:create_calldata("elect",
+                                                  [aefa_fate_code:encode_arg({string,
+                                                                              Entropy})]),
     call_contract(ContractPubkey, Caller, CallData, 0, TxEnv, Trees0).
 
 leader_(Caller, TxEnv, Trees0) ->

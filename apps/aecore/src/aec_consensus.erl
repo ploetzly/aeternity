@@ -317,7 +317,7 @@ consensus_from_network_id(<<"ae_uat">>) ->
 consensus_from_network_id(<<"ae_dev">>) ->
     consensus_config_or_default([{0, {aec_consensus_on_demand, #{}}}]);
 consensus_from_network_id(<<"hc", _/binary>>) ->
-    consensus_config_or_default([{0, {aec_consensus_smart_contract, #{}}}]);
+    consensus_config_or_default([{0, {aec_consensus_hc, #{}}}]);
 consensus_from_network_id(_) ->
     consensus_config_or_default([{0, {aec_consensus_bitcoin_ng, #{}}}]).
 
