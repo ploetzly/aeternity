@@ -736,16 +736,19 @@ node_config(PotentialStakers, ConsensusModule) ->
                                     <<"rewards_contract">> => aeser_api_encoder:encode(contract_pubkey, staking_contract_address()),
                                     <<"contract_owner">> => aeser_api_encoder:encode(account_pubkey,?OWNER_PUBKEY),
                                     <<"expected_key_block_rate">> => 2000,
-                                    <<"stakers">> => Stakers}}}},
+                                    <<"stakers">> => Stakers},
+                                  <<"parent_chain">> =>
+                                    #{<<"type">> => <<"AE">>,
+                                      <<"hosts">> => []
+                                     }}}},
         <<"fork_management">> =>
             #{<<"network_id">> => <<"this_will_be_overwritten_runtime">>},
         <<"mining">> =>
             #{<<"micro_block_cycle">> => 1,
             <<"autostart">> => false,
             <<"beneficiary_reward_delay">> => ?REWARD_DELAY
-        }}.
+        }}.  %% this relies on certain nonce numbers
 
-%% this relies on certain nonce numbers
 validator_pool_contract_address() ->
     aect_contracts:compute_contract_pubkey(?OWNER_PUBKEY, 1).
 

@@ -62,6 +62,7 @@
 -export([node_tuple/1,
          node_name/1,
          parent_chain_node/1,
+         external_api_port/1,
 
          peer_info/1,
          connect/1,
