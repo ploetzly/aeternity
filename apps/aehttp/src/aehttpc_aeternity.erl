@@ -10,7 +10,7 @@
 
 %% @doc fetch latest top hash
 get_latest_block(Host, Port, _User, _Password, _Seed) ->
-    get_top_block_hash(Host, Port).
+    get_top_block_header(Host, Port).
 
 get_commitment_tx_in_block(Host, Port, _User, _Password, _Seed, BlockHash, ParentHCAccountPubKey) ->
     {ok, #{<<"micro_blocks">> := MBs}} = get_generation(Host, Port, BlockHash),
@@ -30,12 +30,14 @@ post_commitment(Host, Port, AccountId, Signature, HCAccountId, CurrentTop) ->
 %%%===================================================================
 %%%  AE HTTP protocol
 %%%===================================================================
--spec get_top_block_hash(binary(), integer()) -> {ok, binary()} | {error, term()}.
-get_top_block_hash(Host, Port) ->
+-spec get_top_block_header(binary(), integer()) -> {ok, binary()} | {error, term()}.
+get_top_block_header(Host, Port) ->
     try
-        {ok, #{<<"hash">> := Hash}} =
-            get_request(<<"/v3/key-blocks/current/hash">>, Host, Port, 5000),
-        {ok, Hash}
+        {ok, #{<<"hash">> := Hash,
+               <<"prev_key_hash">> := PrevHash,
+               <<"height">> := Height}} =
+            get_request(<<"/v3/key-blocks/current">>, Host, Port, 5000),
+        {ok, Hash, PrevHash, Height}
     catch E:R ->
         {error, {E, R}}
     end.

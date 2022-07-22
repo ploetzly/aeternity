@@ -5,8 +5,24 @@
 %% Required exports:
 -export([get_latest_block/5, get_commitment_tx_in_block/6, post_commitment/6]).
 
+-export([from_hex/1]).
+
 get_latest_block(Host, Port, User, Password, Seed) ->
-    getbestblockhash(Host, Port, User, Password, Seed, true).
+    get_latest_block(Host, Port, User, Password, Seed, 3).
+
+get_latest_block(_Host, _Port, _User, _Password, _Seed, Attempts) when
+      Attempts < 1 ->
+    {error, inconsistent_responses};
+get_latest_block(Host, Port, User, Password, Seed, Attempts) ->
+    Hash = getbestblockhash(Host, Port, User, Password, Seed, true),
+    {Height, Hash1, PrevHash, _Txs}
+        = getblock(Host, Port, User, Password, Seed, to_hex(Hash), true, 5000),
+    case Hash1 =:= Hash of
+        true ->
+            {ok, Hash, PrevHash, Height};
+        false -> %% the block had been replaced?
+            get_latest_block(Host, Port, User, Password, Seed, Attempts - 1)
+    end.
 
 get_commitment_tx_in_block(Host, Port, User, Password, Seed, BlockHash) ->
     getblock(Host, Port, User, Password, Seed, true, BlockHash, _Verbosity = 2).
@@ -134,12 +150,13 @@ url(Host, Port, _) when is_list(Host), is_integer(Port) ->
 path(Scheme, Host, Port) ->
   lists:concat([Scheme, Host, ":", Port]).
 
-
-
 -spec from_hex(binary()) -> binary().
 from_hex(HexData) ->
-  ToInt = fun (H, L) -> binary_to_integer(<<H, L>>,16) end,
-  _Payload = << <<(ToInt(H, L))>> || <<H:8, L:8>> <= HexData >>.
+    aeu_hex:hex_to_bin(binary_to_list(HexData)).
+
+-spec to_hex(binary()) -> binary().
+to_hex(Payload) ->
+    aeu_hex:bin_to_hex(Payload).
 
 -spec prev_hash(map()) -> null | binary().
 prev_hash(Obj) ->

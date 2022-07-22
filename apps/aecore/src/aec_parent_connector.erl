@@ -34,16 +34,26 @@
 -define(SERVER, ?MODULE).
 -define(SEED_BYTES, 16).
 
+%% top's state
+-record(top,
+    {
+        hash = <<>> :: binary(),
+        height = 0 :: non_neg_integer(),
+        prev_hash = <<>> :: binary()
+    }).
+-type top() :: #top{}.
+
 %% Loop state
 -record(state,
     {
         parent_conn_mod = aehttpc_btc,
         fetch_interval = 10000, % Interval for parent top change checks
         parent_hosts = [],
-        parent_top = <<>>,
+        parent_top :: top(),
         rpc_seed = crypto:strong_rand_bytes(?SEED_BYTES) % BTC Api only
     }).
--type state() :: state.
+-type state() :: #state{}.
+
 
 %%%=============================================================================
 %%% API
@@ -107,27 +117,29 @@ handle_info(check_parent, #state{parent_hosts = ParentNodes,
                                 fetch_interval = FetchInterval,
                                 rpc_seed = Seed} = State) ->
     %% Parallel fetch top block from all configured parent chain nodes
-    case fetch_parent_tops(Mod, ParentNodes, Seed) of
-        {ok, ParentTop, _} ->
-            %% No change, just check again later
-            ok;
-        {ok, NewParentTop, Node} ->
-            %% Fetch the commitment Txs in the parent block from a node
-            %% that had the majority answer
-            _Commitments = fetch_commitments(Mod, Node, Seed, NewParentTop)
-            %% Commitments may include varying view on what is the latest 
-            %%   block.
-            %% Commitments include:
-            %%   [{Committer, Committers view of child chain top hash}]
-            %% - Run the algorithm to derive the consensus top block
-            %% - Call the smart contract to elect new leader.
-            %% - Notify conductor of new status
-    end,
+    ParentTop1 =
+        case fetch_parent_tops(Mod, ParentNodes, Seed) of
+            {ok, ParentTop, _} ->
+                %% No change, just check again later
+                ok;
+            {ok, NewParentTop, Node} ->
+                %% Fetch the commitment Txs in the parent block from a node
+                %% that had the majority answer
+                _Commitments = fetch_commitments(Mod, Node, Seed, NewParentTop#top.hash)
+                %% Commitments may include varying view on what is the latest 
+                %%   block.
+                %% Commitments include:
+                %%   [{Committer, Committers view of child chain top hash}]
+                %% - Run the algorithm to derive the consensus top block
+                %% - Call the smart contract to elect new leader.
+                %% - Notify conductor of new status
+        end,
     if is_integer(FetchInterval) ->
         erlang:send_after(FetchInterval, self(), check_parent);
         true -> ok
     end,
-    {noreply, State#state{rpc_seed = increment_seed(Seed)}};
+    {noreply, State#state{rpc_seed = increment_seed(Seed),
+                          parent_top = ParentTop1}};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -150,8 +162,11 @@ fetch_parent_tops(Mod, ParentNodes, Seed) ->
 fetch_parent_top(Mod, #{host := Host, port := Port,
                         user := User, password := Password} = Node, Seed) ->
     case Mod:get_latest_block(Host, Port, User, Password, Seed) of
-        {ok, BlockHash} ->
-            {ok, {BlockHash, Node}};
+        {ok, BlockHash, PrevHash, Height} ->
+            Top = #top{hash = BlockHash,
+                       prev_hash = PrevHash,
+                       height = Height},
+            {ok, {Top, Node}};
         Err ->
             Err
     end.
@@ -160,16 +175,16 @@ fetch_parent_top(Mod, #{host := Host, port := Port,
 %% * multiple successful replies
 %% * majority agree on block hash
 parent_top_consensus(Good0, _Errors = [], TotalCount) ->
-    Good = [{Hash, Node} || {ok, {Hash, Node}} <- Good0],
-    Counts = lists:foldl(fun({Hash, _Node}, Acc) ->
+    Good = [{Top, Node} || {ok, {Top, Node}} <- Good0],
+    Counts = lists:foldl(fun({Top, _Node}, Acc) ->
                             Fun = fun(V) -> V + 1 end,
-                            maps:update_with(Hash,Fun,1,Acc)
+                            maps:update_with(Top,Fun,1,Acc)
                         end, #{}, Good),
-    {MostReturnedHash, Qty} = lists:last(lists:keysort(2, maps:to_list(Counts))),
+    {MostReturnedTop, Qty} = lists:last(lists:keysort(2, maps:to_list(Counts))),
     %% Need Qty to be > half of the total number of configured nodes ??
     if Qty > TotalCount div 2 ->
-            {_, Node} = lists:keyfind(MostReturnedHash, 1, Good),
-            {ok, MostReturnedHash, Node};
+            {_, Node} = lists:keyfind(MostReturnedTop, 1, Good),
+            {ok, MostReturnedTop, Node};
        true ->
             {error, no_parent_chain_agreement}
     end.
@@ -187,14 +202,14 @@ pmap(Fun, L, Timeout) ->
                         {WorkerPid, WorkerMRef} =
                             spawn_monitor(
                                 fun() ->
-                                    Res = Fun(E),
-                                    exit({ok, Res})
+                                    Top = Fun(E),
+                                    exit({ok, Top})
                                 end),
                         Result =
                             receive
                                 {'DOWN', WorkerMRef, process, WorkerPid, Res} ->
                                     case Res of
-                                        {ok, R} -> {ok, R};
+                                        {ok, T} -> {ok, T};
                                         _       -> {error, failed}
                                     end
                             after Timeout -> {error, request_timeout}

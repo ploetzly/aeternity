@@ -47,6 +47,14 @@ forbidden(_Mod, _OperationId) ->
     false.
 
 %% Simulator compatible callbacks for a subset of the API required
+handle_request('GetCurrentKeyBlock',_,#{sim_name := SimName}) ->
+    KB = aec_chain_sim:top_key_block(SimName),
+    case encode_keyblock(KB, SimName) of
+        {error, Reason} ->
+            {404, [], Reason};
+        {ok, EncodedKB} ->
+            {200, [], EncodedKB}
+    end;
 handle_request('GetCurrentKeyBlockHash',_,#{sim_name := SimName}) ->
     Hash = aec_chain_sim:top_key_block_hash(SimName),
     EncodedHash = aeser_api_encoder:encode(key_block_hash, Hash),
@@ -119,21 +127,36 @@ handle_request(OperationId, Params, Context) ->
     lager:debug("Unsupported request = ~p~n", [{OperationId, Params, Context}]),
     {404, [], #{reason => <<"Unsupported operation in ae_sim">>}}.
 
-generation_rsp(_, error) ->
-    {404, [], #{reason => <<"Block not found">>}};
-generation_rsp(SimName, {ok, #{ key_block := KeyBlock, micro_blocks := MicroBlocks }}) ->
+prev_block_type(KeyBlock, SimName) ->
     case aec_blocks:height(KeyBlock) of
         0 ->
-            {200, [], aehttp_helpers:encode_generation(KeyBlock, MicroBlocks, key)};
+            {ok, key};
         _ ->
             PrevBlockHash = aec_blocks:prev_hash(KeyBlock),
             case aec_chain_sim:block_by_hash(SimName, PrevBlockHash) of
                 {ok, PrevBlock} ->
-                    PrevBlockType = aec_blocks:type(PrevBlock),
-                    {200, [], aehttp_helpers:encode_generation(KeyBlock, MicroBlocks, PrevBlockType)};
-                error ->
-                    {404, [], #{reason => <<"Block not found">>}}
+                    {ok, aec_blocks:type(PrevBlock)};
+                error -> {error, not_found}
             end
+    end.
+
+encode_keyblock(KeyBlock, SimName) ->
+    case prev_block_type(KeyBlock, SimName) of
+        {error, not_found} ->
+            {error, #{reason => <<"Block not found">>}};
+        {ok, PrevBlockType} ->
+             {ok, aehttp_helpers:encode_keyblock(KeyBlock, PrevBlockType)}
+    end.
+
+        
+generation_rsp(_, error) ->
+    {404, [], #{reason => <<"Block not found">>}};
+generation_rsp(SimName, {ok, #{ key_block := KeyBlock, micro_blocks := MicroBlocks }}) ->
+    case prev_block_type(KeyBlock, SimName) of
+        {error, not_found} ->
+            {404, [], #{reason => <<"Block not found">>}};
+        {ok, PrevBlockType} ->
+            {200, [], aehttp_helpers:encode_generation(KeyBlock, MicroBlocks, PrevBlockType)}
     end.
 
 %%%=============================================================================

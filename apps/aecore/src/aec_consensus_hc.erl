@@ -11,7 +11,7 @@
 -behavior(aec_consensus).
 
 
--define(TAG, 1337). %% TODO: remove this
+-define(TAG, 1336). %% TODO: remove this
 -define(SIGNATURE_SIZE, 16).
 -define(ETS_CACHE_TABLE, ?MODULE).
 -define(ELECTION_CONTRACT, election).

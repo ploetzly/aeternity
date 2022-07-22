@@ -50,6 +50,7 @@
         , find_signed_tx/2             %% (Name, TxHash) -> {value, STx)} | none
         , top_block_hash/1             %% (Name) -> Hash
         , top_key_block_hash/1         %% (Name) -> Hash
+        , top_key_block/1              %% (Name) -> Block
         , block_by_hash/2              %% (Name, BlockHash) -> {ok, Block}
         , get_key_block_hash_at_height/2
         , get_current_generation/1     %% (Name) -> {ok, Generation}
@@ -283,6 +284,10 @@ top_block_hash(Name) ->
 top_key_block_hash(Name) ->
     chain_req(Name, top_key_block_hash).
 
+-spec top_key_block(Name :: atom()) -> binary().
+top_key_block(Name) ->
+    chain_req(Name, top_key_block).
+
 -spec get_key_block_hash_at_height(Name :: atom(), Height :: integer()) -> binary().
 get_key_block_hash_at_height(Name, Height) ->
     chain_req(Name, {get_key_block_hash_at_height, Height}).
@@ -407,6 +412,10 @@ setup_meck(Name) ->
                 fun() ->
                         chain_req(Name, top_key_block_hash)
                 end),
+    meck:expect(aec_chain, top_key_block, 0,
+                fun() ->
+                        chain_req(Name, top_key_block)
+                end),
     meck:expect(aec_chain, get_header, 1,
                 fun(BHash) ->
                         chain_req(Name, {get_header, BHash})
@@ -503,6 +512,8 @@ handle_call(top_block_hash, _From, #st{chain = Chain} = St) ->
     {reply, top_block_hash_(Chain), St};
 handle_call(top_key_block_hash, _From, #st{chain = Chain} = St) ->
     {reply, top_key_block_hash_(Chain), St};
+handle_call(top_key_block, _From, #st{chain = Chain} = St) ->
+    {reply, top_key_block_(Chain), St};
 handle_call({block_by_hash, Hash},_From, #st{chain = Chain} = St) ->
     {reply, get_block_(Hash, Chain), St};
 handle_call(get_current_generation,  _From, #st{chain = Chain} = St) ->
@@ -827,10 +838,15 @@ top_block_hash_(Chain) ->
     {ok, H} = aec_headers:hash_header(aec_blocks:to_header(B)),
     H.
 
- top_key_block_hash_(Chain) ->
+top_key_block_hash_(Chain) ->
     [#{block := B}|_] = blocks_until_key(blocks(main, Chain)),
     {ok, H} = aec_headers:hash_header(aec_blocks:to_header(B)),
     H.
+
+top_key_block_(Chain) ->
+    [#{block := B}|_] = blocks_until_key(blocks(main, Chain)),
+    B.
+
 
 top_block_node(Chain) ->
     [#{block := B}|_] = blocks_until_key(blocks(main, Chain)),
