@@ -104,8 +104,16 @@ init_per_suite(Config0) ->
                                                         #{}, %% config is rewritten per suite
                                                         [],
                                                         Config),
+            ParentCfg =
+                #{<<"chain">> =>
+                        #{<<"persist">> => false},
+                    <<"mining">> =>
+                        #{<<"micro_block_cycle">> => 1,
+                          <<"expected_mine_rate">> => 10000,
+                          <<"autostart">> => true
+                            }},
             _Config1 = aecore_suite_utils:init_per_suite([?PARENT_CHAIN_NODE1],
-                                                         #{},
+                                                         ParentCfg,
                                                          [],
                                                         Config),
             StakingContract = staking_contract_address(),
@@ -131,27 +139,22 @@ init_per_group(Group, Config0) ->
 
 init_per_group_custom(NetworkId, Consensus, Config) ->
     ElectionContract = election_contract_by_consensus(Consensus),
-    ConsensusName =
-        case Consensus of
-            ?CONSENSUS_HC -> <<"hyper_chain">>;
-            ?CONSENSUS_POS -> <<"smart_contract">>
-        end,
     build_json_files(NetworkId, ElectionContract, Config),
     %% different runs use different network ids
     Env = [ {"AE__FORK_MANAGEMENT__NETWORK_ID", binary_to_list(NetworkId)}
           ],
+    aecore_suite_utils:start_node(?PARENT_CHAIN_NODE1, Config),
+    aecore_suite_utils:connect(?PARENT_CHAIN_NODE1_NAME, []),
     aecore_suite_utils:create_config(?NODE1, Config,
-                                    node_config([?ALICE, ?BOB], ConsensusName),
+                                    node_config([?ALICE, ?BOB], Consensus),
                                     [{add_peers, true} ]),
     aecore_suite_utils:create_config(?NODE2, Config,
-                                    node_config([], ConsensusName),
+                                    node_config([], Consensus),
                                     [{add_peers, true} ]),
     aecore_suite_utils:start_node(?NODE1, Config, Env),
     aecore_suite_utils:connect(?NODE1_NAME, []),
     aecore_suite_utils:start_node(?NODE2, Config, Env),
     aecore_suite_utils:connect(?NODE2_NAME, []),
-    aecore_suite_utils:start_node(?PARENT_CHAIN_NODE1, Config),
-    aecore_suite_utils:connect(?PARENT_CHAIN_NODE1_NAME, []),
     [{network_id, NetworkId},
      {consensus, Consensus} | Config].
 
@@ -422,7 +425,7 @@ verify_fees(Config) ->
     lists:foreach(
         fun(_) -> Test() end,
         lists:seq(1, 10)),
-    {ok, SignedTx} = seed_account(pubkey(?ALICE), 1, Config),
+    {ok, _SignedTx} = seed_account(pubkey(?ALICE), 1, Config),
     {ok, _} = aecore_suite_utils:mine_key_blocks(?NODE1_NAME, ?REWARD_DELAY - 1),
     ct:log("Test with no transaction", []),
     Test(), %% before fees
@@ -716,7 +719,7 @@ build_json_files(NetworkId, ElectionContract, Config) ->
          }),
     ok.
 
-node_config(PotentialStakers, ConsensusModule) ->
+node_config(PotentialStakers, Consensus) ->
     Stakers =
         lists:map(
             fun(Who) ->
@@ -726,27 +729,42 @@ node_config(PotentialStakers, ConsensusModule) ->
                 #{<<"pub">> => Pub, <<"priv">> => Priv}
             end,
             PotentialStakers),
+    ConsensusName =
+        case Consensus of
+            ?CONSENSUS_HC -> <<"hyper_chain">>;
+            ?CONSENSUS_POS -> <<"smart_contract">>
+        end,
+    SpecificConfig =
+        case Consensus of
+            ?CONSENSUS_POS -> #{};
+            ?CONSENSUS_HC ->
+                #{  <<"parent_chain">> =>
+                        #{  <<"type">> => <<"AE">>,
+                            <<"start_height">> => 35,
+                            <<"fetch_interval">> => 10,
+                            <<"nodes">> =>
+                                [   #{  <<"host">> => <<"127.0.0.1">>,
+                                        <<"port">> => aecore_suite_utils:external_api_port(?PARENT_CHAIN_NODE1),
+                                        <<"user">> => <<"test">>,
+                                        <<"password">> => <<"Pass">>}
+                                ]
+                        }
+                 }
+        end,
     #{<<"chain">> =>
             #{  <<"persist">> => false,
                 <<"hard_forks">> => #{integer_to_binary(?CERES_PROTOCOL_VSN) => 0},
                 <<"consensus">> =>
-                    #{<<"0">> => #{<<"name">> => ConsensusModule,
+                    #{<<"0">> => #{<<"name">> => ConsensusName,
                                 <<"config">> =>
-                                #{<<"election_contract">> => aeser_api_encoder:encode(contract_pubkey, election_contract_address()),
-                                    <<"rewards_contract">> => aeser_api_encoder:encode(contract_pubkey, staking_contract_address()),
-                                    <<"contract_owner">> => aeser_api_encoder:encode(account_pubkey,?OWNER_PUBKEY),
-                                    <<"expected_key_block_rate">> => 2000,
-                                    <<"stakers">> => Stakers,
-                                    <<"parent_chain">> =>
-                                        #{<<"type">> => <<"AE">>,
-                                        <<"fetch_interval">> => 1000,
-                                        <<"nodes">> =>
-                                            [#{<<"host">> => <<"127.0.0.1">>,
-                                                <<"port">> => aecore_suite_utils:external_api_port(?PARENT_CHAIN_NODE1),
-                                                <<"user">> => <<"test">>,
-                                                <<"password">> => <<"Pass">>}
-                                            ]
-                                         }}}}},
+                                maps:merge(
+                                    #{  <<"election_contract">> => aeser_api_encoder:encode(contract_pubkey, election_contract_address()),
+                                        <<"rewards_contract">> => aeser_api_encoder:encode(contract_pubkey, staking_contract_address()),
+                                        <<"contract_owner">> => aeser_api_encoder:encode(account_pubkey,?OWNER_PUBKEY),
+                                        <<"expected_key_block_rate">> => 2000,
+                                        <<"stakers">> => Stakers},
+                                    SpecificConfig)
+                                    }}},
         <<"fork_management">> =>
             #{<<"network_id">> => <<"this_will_be_overwritten_runtime">>},
         <<"mining">> =>
@@ -754,7 +772,6 @@ node_config(PotentialStakers, ConsensusModule) ->
             <<"autostart">> => false,
             <<"beneficiary_reward_delay">> => ?REWARD_DELAY
         }}.  %% this relies on certain nonce numbers
-
 validator_pool_contract_address() ->
     aect_contracts:compute_contract_pubkey(?OWNER_PUBKEY, 1).
 
@@ -767,3 +784,19 @@ election_contract_address() ->
 election_contract_by_consensus(?CONSENSUS_HC) -> ?HC_ELECTION_CONTRACT;
 election_contract_by_consensus(?CONSENSUS_POS) -> ?POS_ELECTION_CONTRACT.
 
+
+produce_validator_tx() ->
+    Who = ?BOB,
+    SCId = staking_contract_address(),
+    Tx =
+        contract_call(SCId, ?STAKING_CONTRACT,
+                            "set_validator_avatar_url",
+                            ["\"https://pbs.twimg.com/profile_images/1338340549804380160/A3oKPQuq_400x400.jpg\""], 0,
+                            pubkey(Who), 4),
+    Bin0 = aetx:serialize_to_binary(Tx),
+    Bin = aec_hash:hash(signed_tx, Bin0), %% since we are in CERES context, we sign th hash
+    NetworkId = <<"ae_smart_contract_test">>,
+    BinForNetwork = <<NetworkId/binary, Bin/binary>>,
+    Signatures = [ enacl:sign_detached(BinForNetwork, privkey(Who))],
+    SignedTx = aetx_sign:new(Tx, Signatures),
+    aeser_api_encoder:encode(transaction, aetx_sign:serialize_to_binary(SignedTx)).

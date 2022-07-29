@@ -1,20 +1,15 @@
 %%% -*- erlang-indent-level:4; indent-tabs-mode: nil -*-
 %%%-------------------------------------------------------------------
-%%% @copyright (C) 2018, Aeternity Anstalt
+%%% @copyright (C) 2022, Aeternity
 %%% @doc
-%%% Manage interaction with hyperchain parent chain
+%%% Manage hyperchain parent chain cache
 %%% @end
 %%%-------------------------------------------------------------------
 
 -module(aec_parent_connector).
 
 %% Functionality:
-%% - at intervals check parent chain to understand when new top block is
-%%   available.
-%% - New top block from parent chain should include commitment transactions
-%%   on the parent chain.
-%% - Call consensus smart contract
-%% 
+%% TODO
 -behaviour(gen_server).
 
 %%%=============================================================================
@@ -34,14 +29,6 @@
 -define(SERVER, ?MODULE).
 -define(SEED_BYTES, 16).
 
-%% top's state
--record(top,
-    {
-        hash = <<>> :: binary(),
-        height = 0 :: non_neg_integer(),
-        prev_hash = <<>> :: binary()
-    }).
--type top() :: #top{}.
 
 %% Loop state
 -record(state,
@@ -49,7 +36,7 @@
         parent_conn_mod = aehttpc_btc,
         fetch_interval = 10000, % Interval for parent top change checks
         parent_hosts = [],
-        parent_top :: top(),
+        parent_top  = not_yet_fetched :: not_yet_fetched | aec_parent_chain_block:block(),
         rpc_seed = crypto:strong_rand_bytes(?SEED_BYTES) % BTC Api only
     }).
 -type state() :: #state{}.
@@ -121,11 +108,14 @@ handle_info(check_parent, #state{parent_hosts = ParentNodes,
         case fetch_parent_tops(Mod, ParentNodes, Seed) of
             {ok, ParentTop, _} ->
                 %% No change, just check again later
-                ok;
+                lager:info("ASDF same top", []),
+                ParentTop;
             {ok, NewParentTop, Node} ->
                 %% Fetch the commitment Txs in the parent block from a node
                 %% that had the majority answer
-                _Commitments = fetch_commitments(Mod, Node, Seed, NewParentTop#top.hash)
+                aec_parent_chain_cache:post_block(NewParentTop),
+                %_Commitments = fetch_commitments(Mod, Node, Seed,
+                %                                 aec_parent_chain_block:hash(NewParentTop))
                 %% Commitments may include varying view on what is the latest 
                 %%   block.
                 %% Commitments include:
@@ -133,6 +123,8 @@ handle_info(check_parent, #state{parent_hosts = ParentNodes,
                 %% - Run the algorithm to derive the consensus top block
                 %% - Call the smart contract to elect new leader.
                 %% - Notify conductor of new status
+                lager:info("ASDF new top, height: ~p", [aec_parent_chain_block:height(NewParentTop)]),
+                NewParentTop
         end,
     if is_integer(FetchInterval) ->
         erlang:send_after(FetchInterval, self(), check_parent);
@@ -163,9 +155,7 @@ fetch_parent_top(Mod, #{host := Host, port := Port,
                         user := User, password := Password} = Node, Seed) ->
     case Mod:get_latest_block(Host, Port, User, Password, Seed) of
         {ok, BlockHash, PrevHash, Height} ->
-            Top = #top{hash = BlockHash,
-                       prev_hash = PrevHash,
-                       height = Height},
+            Top = aec_parent_chain_block:new(BlockHash, Height, PrevHash),
             {ok, {Top, Node}};
         Err ->
             Err

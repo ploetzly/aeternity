@@ -1203,7 +1203,8 @@ create_key_block_candidate(#state{key_block_candidates = [{_, #candidate{top_has
                                   top_block_hash       = TopHash} = State) ->
     %% We have the most recent candidate already. Just start mining.
     start_block_production_(State);
-create_key_block_candidate(#state{top_block_hash = TopHash} = State) ->
+create_key_block_candidate(#state{top_block_hash = TopHash,
+                                  top_height = Height} = State) ->
     Beneficiary =
         case State#state.mode of
             stratum -> State#state.stratum_beneficiary;
