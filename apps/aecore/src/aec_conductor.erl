@@ -1205,17 +1205,25 @@ create_key_block_candidate(#state{key_block_candidates = [{_, #candidate{top_has
     start_block_production_(State);
 create_key_block_candidate(#state{top_block_hash = TopHash,
                                   top_height = Height} = State) ->
-    Beneficiary =
-        case State#state.mode of
-            stratum -> State#state.stratum_beneficiary;
-            _ ->
-                ConsensusModule = consensus_module(State),
-                {ok, B} = get_next_beneficiary(ConsensusModule),
-                B
-        end,
+    ConsensusModule = consensus_module(State),
+
     epoch_mining:info("Creating key block candidate on the top"),
     Fun = fun() ->
-                  {aec_block_key_candidate:create(TopHash, Beneficiary), TopHash}
+                SignModule = ConsensusModule:get_sign_module(),
+                BeneficiaryFun =
+                    fun() ->
+                        case State#state.mode of
+                            stratum -> {ok, State#state.stratum_beneficiary};
+                            _ ->
+                                get_next_beneficiary(ConsensusModule)
+                        end
+                    end,
+                case BeneficiaryFun() of
+                    {ok, Beneficiary} ->
+                        {ok, Miner} = SignModule:candidate_pubkey(),
+                        {aec_block_key_candidate:create(TopHash, Beneficiary, Miner), TopHash};
+                    {error, _} = Err -> {Err, TopHash}
+                end
           end,
     {State1, _Pid} = dispatch_worker(create_key_block_candidate, Fun, State),
     State1.
@@ -1434,14 +1442,16 @@ get_pending_key_block(undefined, State) ->
 get_pending_key_block(_TopHash, #state{has_beneficiary = false} = State) ->
     {{error, beneficiary_not_configured}, State};
 get_pending_key_block(TopHash, State) ->
+    ConsensusModule = consensus_module(State),
+    SignModule = ConsensusModule:get_sign_module(),
     Beneficiary =
         case State#state.mode of
             stratum -> State#state.stratum_beneficiary;
             _ ->
-                ConsensusModule = consensus_module(State),
                 {ok, B} = get_next_beneficiary(ConsensusModule),
                 B
         end,
+    {ok, Miner} = SignModule:candidate_pubkey(),
     case aec_block_key_candidate:create(TopHash, Beneficiary) of
         {ok, Block} -> {{ok, Block}, State#state{ pending_key_block = Block }};
         {error, _}  -> {{error, not_found}, State}

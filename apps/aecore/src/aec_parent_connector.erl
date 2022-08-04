@@ -1,4 +1,4 @@
-%%% -*- erlang-indent-level:4; indent-tabs-mode: nil -*-
+%%% -*- erlang-indent-level:4; indent-tabs-mode:aec_parent_connector.erl
 %%%-------------------------------------------------------------------
 %%% @copyright (C) 2022, Aeternity
 %%% @doc
@@ -21,6 +21,8 @@
 
 %% Use in test only
 -export([trigger_fetch/0]).
+
+-export([fetch_block_by_hash/1]).
 
 %% Callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -70,6 +72,9 @@ stop() ->
 trigger_fetch() ->
     gen_server:call(?SERVER, trigger_fetch).
 
+fetch_block_by_hash(Hash) ->
+    gen_server:cast(?SERVER, {fetch_block_by_hash, Hash}).
+
 %%%=============================================================================
 %%% Gen Server Callbacks
 %%%=============================================================================
@@ -94,7 +99,23 @@ handle_call(_Request, _From, State) ->
     {reply, Reply, State}.
 
 -spec handle_cast(any(), state()) -> {noreply, state()}.
-handle_cast(_Msg, State) ->
+handle_cast({fetch_block_by_hash, Hash},
+            #state{ parent_hosts = ParentNodes,
+                    parent_conn_mod = Mod,
+                    fetch_interval = FetchInterval,
+                    rpc_seed = Seed} = State) ->
+    %% Parallel fetch top block from all configured parent chain nodes
+    lager:debug("ASDF fetch block by hash", []),
+    case fetch_block_by_hash(Hash, Mod, ParentNodes, Seed) of
+        {ok, Block, _} ->
+            lager:debug("ASDF consensus around block ~p", [Block]),
+            aec_parent_chain_cache:post_block(Block);
+        {error, no_parent_chain_agreement} = Err ->
+            %% TODO: decide what to do: this is likely happening because of
+            %% rapid parent chain reorganizations
+            lager:warning("Parent nodes are unable to reach consensus", []),
+            pass
+    end,
     {noreply, State}.
 
 -spec handle_info(any(), state()) -> {noreply, state()}.
@@ -107,10 +128,11 @@ handle_info(check_parent, #state{parent_hosts = ParentNodes,
     ParentTop1 =
         case fetch_parent_tops(Mod, ParentNodes, Seed) of
             {ok, ParentTop, _} ->
+                lager:debug("ASDF same top", []),
                 %% No change, just check again later
-                lager:info("ASDF same top", []),
                 ParentTop;
             {ok, NewParentTop, Node} ->
+                lager:debug("ASDF new top ~p", [NewParentTop]),
                 %% Fetch the commitment Txs in the parent block from a node
                 %% that had the majority answer
                 aec_parent_chain_cache:post_block(NewParentTop),
@@ -123,8 +145,10 @@ handle_info(check_parent, #state{parent_hosts = ParentNodes,
                 %% - Run the algorithm to derive the consensus top block
                 %% - Call the smart contract to elect new leader.
                 %% - Notify conductor of new status
-                lager:info("ASDF new top, height: ~p", [aec_parent_chain_block:height(NewParentTop)]),
-                NewParentTop
+                NewParentTop;
+            {error, no_parent_chain_agreement} ->
+                lager:warning("Parent nodes are unable to reach consensus", []),
+                ParentTop
         end,
     if is_integer(FetchInterval) ->
         erlang:send_after(FetchInterval, self(), check_parent);
@@ -147,13 +171,22 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 fetch_parent_tops(Mod, ParentNodes, Seed) ->
-    Fun = fun(Parent) -> fetch_parent_top(Mod, Parent, Seed) end,
+    Fun = fun(Parent) -> fetch_block(fun Mod:get_latest_block/5, Parent, Seed) end,
     {Good, Errors} = pmap(Fun, ParentNodes, 10000),
-    parent_top_consensus(Good, Errors, length(ParentNodes)).
+    responses_consensus(Good, Errors, length(ParentNodes)).
 
-fetch_parent_top(Mod, #{host := Host, port := Port,
+fetch_block_by_hash(Hash, Mod, ParentNodes, Seed) ->
+    FetchFun =
+        fun(Host, Port, User, Password, Seed) ->
+            Mod:get_header_by_hash(Hash, Host, Port, User, Password, Seed)
+        end,
+    Fun = fun(Parent) -> fetch_block(FetchFun, Parent, Seed) end,
+    {Good, Errors} = pmap(Fun, ParentNodes, 10000),
+    responses_consensus(Good, Errors, length(ParentNodes)).
+
+fetch_block(FetchFun, #{host := Host, port := Port,
                         user := User, password := Password} = Node, Seed) ->
-    case Mod:get_latest_block(Host, Port, User, Password, Seed) of
+    case FetchFun(Host, Port, User, Password, Seed) of
         {ok, BlockHash, PrevHash, Height} ->
             Top = aec_parent_chain_block:new(BlockHash, Height, PrevHash),
             {ok, {Top, Node}};
@@ -163,8 +196,8 @@ fetch_parent_top(Mod, #{host := Host, port := Port,
 
 %% Check:
 %% * multiple successful replies
-%% * majority agree on block hash
-parent_top_consensus(Good0, _Errors = [], TotalCount) ->
+%% * majority agree on a block
+responses_consensus(Good0, _Errors = [], TotalCount) ->
     Good = [{Top, Node} || {ok, {Top, Node}} <- Good0],
     Counts = lists:foldl(fun({Top, _Node}, Acc) ->
                             Fun = fun(V) -> V + 1 end,

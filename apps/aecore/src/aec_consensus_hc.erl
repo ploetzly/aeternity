@@ -120,7 +120,8 @@ start(Config) ->
                   password => Pass}
             end,
             Nodes0),
-    aec_parent_chain_cache:start_link(StartHeight),
+    CacheSize = 2000, %% TODO: make it configurable
+    aec_parent_chain_cache:start_link(StartHeight, CacheSize),
     aec_parent_connector:start_link(ParentConnMod, FetchInterval, ParentHosts),
     ok.
 
@@ -300,7 +301,7 @@ generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := Ex
                     Seal = aec_headers:deserialize_pow_evidence_from_binary(<<Signature/binary, Padding/binary>>),
                     {continue_mining, {ok, Seal}}
             end;
-        {error, not_produced} ->
+        {error, not_in_cache} ->
             lager:info("ASDF did NOT find a block", []),
             timer:sleep(1000),
             {continue_mining, {error, no_solution} }
@@ -501,28 +502,42 @@ beneficiary_() ->
             error({failed_to_elect_new_leader, What})
     end.
 
-%% TODO: this will break once we run out of parent chain blocks
 next_beneficiary() ->
-    {TxEnv, Trees} = aetx_env:tx_env_and_trees_from_top(aetx_transaction),
-    %% call elect_at_height
-    Height   = aetx_env:height(TxEnv) + 1,
+    {TxEnv0, Trees} = aetx_env:tx_env_and_trees_from_top(aetx_transaction),
+    Height0 = aetx_env:height(TxEnv0),
+    Height = Height0 + 1,
     PCHeight = Height + pc_start_height(),
-    {ok, Block} = aec_parent_chain_cache:get_block_by_height(PCHeight),
-    Hash = aec_parent_chain_block:hash(Block),
-    ParentHash = binary_to_list(Hash),
-    {ok, CD} = aeb_fate_abi:create_calldata("elect_at_height",
-                                            [aefa_fate_code:encode_arg({integer, Height}),
-                                             aefa_fate_code:encode_arg({string, list_to_binary(ParentHash)})]),
-    CallData = aeser_api_encoder:encode(contract_bytearray, CD),
-    case call_consensus_contract_(?ELECTION_CONTRACT, TxEnv, Trees, CallData, "elect_at_height(" ++ integer_to_list(Height)  ++ ", " ++ ParentHash ++ ")", 0) of
-        {ok, _Trees1, Call} ->
+    case aec_parent_chain_cache:get_block_by_height(PCHeight) of
+        {ok, Block} ->
+            Hash = aec_parent_chain_block:hash(Block),
+            ParentHash = binary_to_list(Hash),
+            TxEnv = aetx_env:set_height(TxEnv0, Height),
+            {ok, CD} = aeb_fate_abi:create_calldata("elect_at_height",
+                                                    [aefa_fate_code:encode_arg({integer, Height}),
+                                                    aefa_fate_code:encode_arg({string, list_to_binary(ParentHash)})]),
+            CallData = aeser_api_encoder:encode(contract_bytearray, CD),
+            {ok, _Trees1, Call} = call_consensus_contract_(?ELECTION_CONTRACT,
+                                                            TxEnv, Trees,
+                                                            CallData,
+                                                            "elect_at_height("
+                                                            ++
+                                                            integer_to_list(Height)
+                                                            ++ ", " ++
+                                                            ParentHash ++ ")",
+                                                            0),
             {address, Leader} = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
             SignModule = get_sign_module(),
-            SignModule:set_candidate(Leader),
-            {ok, Leader};
-        {error, What} ->
-            %% maybe a softer approach than crash and burn?
-            error({failed_to_elect_new_leader, What})
+            case SignModule:set_candidate(Leader) of
+                {error, key_not_found} ->
+                    lager:info("ASDF not the next leader", []),
+                    timer:sleep(1000),
+                    {error, not_leader};
+                ok ->
+                    {ok, Leader}
+            end;
+        {error, not_in_cache} ->
+            timer:sleep(1000),
+            {error, not_in_cache}
     end.
 
 get_sign_module() -> aec_preset_keys.

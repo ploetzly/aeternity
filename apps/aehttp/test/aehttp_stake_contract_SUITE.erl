@@ -242,7 +242,7 @@ mine_and_sync(_Config) ->
     ok.
 
 wait_same_top() ->
-    wait_same_top(10).
+    wait_same_top(100).
 
 wait_same_top(Attempts) when Attempts < 1 ->
     {error, run_out_of_attempts};
@@ -741,7 +741,7 @@ node_config(PotentialStakers, Consensus) ->
                 #{  <<"parent_chain">> =>
                         #{  <<"type">> => <<"AE">>,
                             <<"start_height">> => 35,
-                            <<"fetch_interval">> => 10,
+                            <<"fetch_interval">> => 1000,
                             <<"nodes">> =>
                                 [   #{  <<"host">> => <<"127.0.0.1">>,
                                         <<"port">> => aecore_suite_utils:external_api_port(?PARENT_CHAIN_NODE1),
