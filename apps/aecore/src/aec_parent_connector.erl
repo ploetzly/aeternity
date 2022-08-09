@@ -105,10 +105,8 @@ handle_cast({fetch_block_by_hash, Hash},
                     fetch_interval = FetchInterval,
                     rpc_seed = Seed} = State) ->
     %% Parallel fetch top block from all configured parent chain nodes
-    lager:debug("ASDF fetch block by hash", []),
     case fetch_block_by_hash(Hash, Mod, ParentNodes, Seed) of
         {ok, Block, _} ->
-            lager:debug("ASDF consensus around block ~p", [Block]),
             aec_parent_chain_cache:post_block(Block);
         {error, no_parent_chain_agreement} = Err ->
             %% TODO: decide what to do: this is likely happening because of
@@ -128,11 +126,9 @@ handle_info(check_parent, #state{parent_hosts = ParentNodes,
     ParentTop1 =
         case fetch_parent_tops(Mod, ParentNodes, Seed) of
             {ok, ParentTop, _} ->
-                lager:debug("ASDF same top", []),
                 %% No change, just check again later
                 ParentTop;
             {ok, NewParentTop, Node} ->
-                lager:debug("ASDF new top ~p", [NewParentTop]),
                 %% Fetch the commitment Txs in the parent block from a node
                 %% that had the majority answer
                 aec_parent_chain_cache:post_block(NewParentTop),

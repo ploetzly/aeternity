@@ -157,22 +157,26 @@ state_pre_transform_key_node(Node, Trees) ->
               aec_block_insertion:node_time(Node), aec_block_insertion:node_prev_hash(Node)),
     Height = aetx_env:height(TxEnv),
     PCHeight = Height + pc_start_height(),
-    {ok, Block} = aec_parent_chain_cache:get_block_by_height(PCHeight),
-    Hash = aec_parent_chain_block:hash(Block),
-    HashStr = binary_to_list(Hash),
-    {ok, CD} = aeb_fate_abi:create_calldata("elect",
-                                            [aefa_fate_code:encode_arg({string, Hash})]),
-    CallData = aeser_api_encoder:encode(contract_bytearray, CD),
-    case call_consensus_contract(?ELECTION_CONTRACT, Node, Trees, CallData, "elect(" ++ HashStr ++ ")") of
-        {ok, Trees1, _} ->
-        aeu_ets_cache:reinit(
-            ?ETS_CACHE_TABLE,
-            current_leader,
-            fun beneficiary_/0),
-            Trees1;
-        {error, What} ->
-            %% maybe a softer approach than crash and burn?
-            error({failed_to_elect_new_leader, What})
+    case aec_parent_chain_cache:get_block_by_height(PCHeight) of
+        {error, not_in_cache} ->
+            throw({bypass, {error, parent_chain_block_not_synced}});
+        {ok, Block} ->
+            Hash = aec_parent_chain_block:hash(Block),
+            HashStr = binary_to_list(Hash),
+            {ok, CD} = aeb_fate_abi:create_calldata("elect",
+                                                    [aefa_fate_code:encode_arg({string, Hash})]),
+            CallData = aeser_api_encoder:encode(contract_bytearray, CD),
+            case call_consensus_contract(?ELECTION_CONTRACT, Node, Trees, CallData, "elect(" ++ HashStr ++ ")") of
+                {ok, Trees1, _} ->
+                aeu_ets_cache:reinit(
+                    ?ETS_CACHE_TABLE,
+                    current_leader,
+                    fun beneficiary_/0),
+                    Trees1;
+                {error, What} ->
+                    %% maybe a softer approach than crash and burn?
+                    error({failed_to_elect_new_leader, What})
+            end
     end.
 
 state_pre_transform_micro_node(_Node, Trees) -> Trees.
@@ -240,7 +244,8 @@ validate_key_header_seal(Header, _Protocol) ->
     Validators = [ fun seal_correct_padding/3
                  , fun seal_correct_signature/3
                  ],
-    aeu_validation:run(Validators, [Header, Signature, Padding]).
+    Res = aeu_validation:run(Validators, [Header, Signature, Padding]),
+    Res.
 
 seal_correct_padding(_Header, _Signature, Padding) ->
     PaddingSize = seal_padding_size(),
@@ -260,11 +265,9 @@ seal_correct_signature(Header, Signature, _Padding) ->
     end.
 
 generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := Expected} = _Config, _) ->
-    lager:info("ASDF looking for parent chain block ~p", [PCHeight]),
     case aec_parent_chain_cache:get_block_by_height(PCHeight) of
         {ok, Block} ->
             Hash = aec_parent_chain_block:hash(Block),
-            lager:info("ASDF found block", []),
             ParentHash = binary_to_list(Hash),
             {TxEnv0, Trees} = aetx_env:tx_env_and_trees_from_top(aetx_transaction),
             Height0 = aetx_env:height(TxEnv0),
@@ -287,7 +290,6 @@ generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := Ex
             SignModule = get_sign_module(),
             case SignModule:set_candidate(Leader) of
                 {error, key_not_found} ->
-                    lager:info("ASDF not the next leader", []),
                     timer:sleep(1000),
                     {continue_mining, {error, no_solution} };
                 ok ->
@@ -302,7 +304,6 @@ generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := Ex
                     {continue_mining, {ok, Seal}}
             end;
         {error, not_in_cache} ->
-            lager:info("ASDF did NOT find a block", []),
             timer:sleep(1000),
             {continue_mining, {error, no_solution} }
     end.
@@ -529,7 +530,6 @@ next_beneficiary() ->
             SignModule = get_sign_module(),
             case SignModule:set_candidate(Leader) of
                 {error, key_not_found} ->
-                    lager:info("ASDF not the next leader", []),
                     timer:sleep(1000),
                     {error, not_leader};
                 ok ->
