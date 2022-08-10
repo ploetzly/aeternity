@@ -208,9 +208,9 @@ responses_consensus(Good0, _Errors = [], TotalCount) ->
             {error, no_parent_chain_agreement}
     end.
 
-fetch_commitments(Mod, #{host := Host, port := Port,
-                        user := User, password := Password}, Seed, NewParentHash) ->
-    Mod:get_commitment_tx_in_block(Host, Port, User, Password, Seed, NewParentHash).
+%%fetch_commitments(Mod, #{host := Host, port := Port,
+%%                        user := User, password := Password}, Seed, NewParentHash) ->
+%%    Mod:get_commitment_tx_in_block(Host, Port, User, Password, Seed, NewParentHash).
 
 pmap(Fun, L, Timeout) ->
     Workers =

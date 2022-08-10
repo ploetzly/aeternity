@@ -1452,7 +1452,7 @@ get_pending_key_block(TopHash, State) ->
                 B
         end,
     {ok, Miner} = SignModule:candidate_pubkey(),
-    case aec_block_key_candidate:create(TopHash, Beneficiary) of
+    case aec_block_key_candidate:create(TopHash, Beneficiary, Miner) of
         {ok, Block} -> {{ok, Block}, State#state{ pending_key_block = Block }};
         {error, _}  -> {{error, not_found}, State}
     end.
