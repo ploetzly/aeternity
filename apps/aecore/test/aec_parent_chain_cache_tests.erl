@@ -11,17 +11,24 @@
 
 -define(TEST_MODULE, aec_parent_chain_cache).
 
+-define(OFFSET, 101).
+-define(FOLLOW_PC_TOP, follow_parent_chain_top).
+-define(FOLLOW_CHILD_TOP, sync_child_chain).
+
 %%%===================================================================
 %%% Test cases
 %%%===================================================================
 
-cache_test_() ->
+follow_parent_chain_strategy_test_() ->
     {foreach,
      fun() ->
-             mock_parent_connector()
+            meck:new(aec_chain, []),
+            meck:expect(aec_chain, top_height, fun() -> 0 end),
+            mock_parent_connector()
      end,
      fun(_) ->
-             unmock_parent_connector()
+            meck:unload(aec_chain),
+            unmock_parent_connector()
      end,
      [ {"Cache the first 100 blocks", fun cache_first_100/0},
        {"Cache blocks while deleting older ones", fun gc_older_blocks/0},
@@ -36,29 +43,35 @@ cache_test_() ->
 cache_first_100() ->
     Test =
         fun(StartHeight, CacheMaxSize) ->
-            {ok, _Pid} = start_cache(StartHeight, CacheMaxSize),
-            {ok, #{ start_height := StartHeight,
-                    max_size     := CacheMaxSize,
-                    blocks       := EmptyBlocks, 
-                    top_height   := 0}} = ?TEST_MODULE:get_state(),
+            {ok, _Pid} = start_cache(StartHeight, CacheMaxSize, ?FOLLOW_PC_TOP),
+            {ok, #{ child_start_height := StartHeight,
+                    child_top_height   := 0,
+                    top_offset         := ?OFFSET,
+                    max_size           := CacheMaxSize,
+                    blocks             := EmptyBlocks, 
+                    top_height         := 0}} = ?TEST_MODULE:get_state(),
             ?assertEqual(map_size(EmptyBlocks), 0),
             lists:foreach(
                 fun(Height) ->
                     Height0 = max(0, Height - 1),
                     Block = block_by_height(Height),
-                    {ok, #{ start_height := StartHeight,
-                            max_size     := CacheMaxSize,
-                            blocks       := Blocks0,
-                            top_height   := Height0}} = ?TEST_MODULE:get_state(),
+                    {ok, #{ child_start_height := StartHeight,
+                            child_top_height   := 0,
+                            top_offset         := ?OFFSET,
+                            max_size           := CacheMaxSize,
+                            blocks             := Blocks0,
+                            top_height         := Height0}} = ?TEST_MODULE:get_state(),
                     %% blocks start from height 0, so the total count is
                     %% the top height + 1; since Height is the next top:
                     ?assertEqual(map_size(Blocks0), Height),
                     {error, not_in_cache} = ?TEST_MODULE:get_block_by_height(Height),
                     ok = ?TEST_MODULE:post_block(Block),
-                    {ok, #{ start_height := StartHeight,
-                            max_size     := CacheMaxSize,
-                            blocks       := Blocks,
-                            top_height   := Height}} = ?TEST_MODULE:get_state(),
+                    {ok, #{ child_start_height := StartHeight,
+                            child_top_height   := 0,
+                            top_offset         := ?OFFSET,
+                            max_size           := CacheMaxSize,
+                            blocks             := Blocks,
+                            top_height         := Height}} = ?TEST_MODULE:get_state(),
                     Block = maps:get(Height, Blocks),
                     ?assertEqual(map_size(Blocks), Height + 1),
                     {ok, Block} = ?TEST_MODULE:get_block_by_height(Height)
@@ -67,13 +80,13 @@ cache_first_100() ->
             ?TEST_MODULE:stop()
         end,
     %% test with cache sizes greater than 100, we will test GC in a different test
-    Test(0, 1000),
-    Test(1337, 1234), %% initially the start height plays no role at which blocks we cache
+    Test(?OFFSET + 0, 1000),
+    Test(?OFFSET + 1337, 1234), %% initially the start height plays no role at which blocks we cache
     ok.
 
 gc_older_blocks() ->
     CacheMaxSize = 20,
-    {ok, _Pid} = start_cache(0, CacheMaxSize),
+    {ok, _Pid} = start_cache(0, CacheMaxSize, ?FOLLOW_PC_TOP),
     %% post CacheMaxSize blocks - the state is growing
     lists:foreach(
         fun(Height) ->
@@ -110,7 +123,7 @@ gc_older_blocks() ->
 
 fill_gaps() ->
     CacheMaxSize = 2000, %% we will test GC when catching up gaps in a different test
-    {ok, _Pid} = start_cache(0, CacheMaxSize),
+    {ok, _Pid} = start_cache(0, CacheMaxSize, ?FOLLOW_PC_TOP),
     %% the state is empty
     {ok, #{blocks := EmptyBlocks}} = ?TEST_MODULE:get_state(),
     ?assertEqual(map_size(EmptyBlocks), 0),
@@ -140,7 +153,7 @@ fill_gaps() ->
 
 fill_gaps_triggers_gc() ->
     CacheMaxSize = 10, %% we will test GC when catching up gaps in a different test
-    {ok, _Pid} = start_cache(0, CacheMaxSize),
+    {ok, _Pid} = start_cache(0, CacheMaxSize, ?FOLLOW_PC_TOP),
     %% the state is empty
     {ok, #{blocks := EmptyBlocks}} = ?TEST_MODULE:get_state(),
     ?assertEqual(map_size(EmptyBlocks), 0),
@@ -183,6 +196,10 @@ start_cache(StartHeight, MaxSize) ->
     Args = [StartHeight, MaxSize],
     gen_server:start({local, ?TEST_MODULE}, ?TEST_MODULE, Args, []).
 
+start_cache(StartHeight, MaxSize, Strategy) ->
+    Args = [StartHeight, MaxSize, Strategy],
+    gen_server:start({local, ?TEST_MODULE}, ?TEST_MODULE, Args, []).
+
 height_to_hash(Height) when Height < 0 -> height_to_hash(0); 
 height_to_hash(Height) when is_integer(Height) -> <<Height:32/unit:8>>.
 
@@ -215,7 +232,12 @@ mock_parent_connector() ->
                             Block = block_by_hash(Hash),
                             ?TEST_MODULE:post_block(Block)
                         end)
-                    end).
+                    end),
+    meck:expect(aec_parent_connector, fetch_block_by_height_blocking,
+                fun(Height) ->
+                    Block = block_by_height(Height),
+                    {ok, Block}
+                end).
 
 unmock_parent_connector() ->
     meck:unload(aec_parent_connector).

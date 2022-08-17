@@ -22,7 +22,10 @@
 %% Use in test only
 -export([trigger_fetch/0]).
 
--export([fetch_block_by_hash/1]).
+-export([fetch_block_by_hash/1,
+         fetch_block_by_height/1,
+         fetch_block_by_hash_blocking/1,
+         fetch_block_by_height_blocking/1]).
 
 %% Callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -75,6 +78,17 @@ trigger_fetch() ->
 fetch_block_by_hash(Hash) ->
     gen_server:cast(?SERVER, {fetch_block_by_hash, Hash}).
 
+fetch_block_by_height(Height) ->
+    gen_server:cast(?SERVER, {fetch_block_by_height, Height}).
+
+%% this blocks the process, use with caution
+fetch_block_by_hash_blocking(Hash) ->
+    gen_server:call(?SERVER, {fetch_block_by_hash, Hash}).
+
+%% this blocks the process, use with caution
+fetch_block_by_height_blocking(Height) ->
+    gen_server:call(?SERVER, {fetch_block_by_height, Height}).
+
 %%%=============================================================================
 %%% Gen Server Callbacks
 %%%=============================================================================
@@ -94,25 +108,27 @@ handle_call(trigger_fetch, _From, State) ->
     self() ! check_parent,
     Reply = ok,
     {reply, Reply, State};
+handle_call({fetch_block_by_hash, Hash}, _From, State) ->
+    Reply = handle_fetch_block(fun fetch_block_by_hash/4, Hash, State),
+    {reply, Reply, State};
+handle_call({fetch_block_by_height, Height}, _From, State) ->
+    Reply = handle_fetch_block(fun fetch_block_by_height/4, Height, State),
+    {reply, Reply, State};
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
 
 -spec handle_cast(any(), state()) -> {noreply, state()}.
-handle_cast({fetch_block_by_hash, Hash},
-            #state{ parent_hosts = ParentNodes,
-                    parent_conn_mod = Mod,
-                    fetch_interval = FetchInterval,
-                    rpc_seed = Seed} = State) ->
-    %% Parallel fetch top block from all configured parent chain nodes
-    case fetch_block_by_hash(Hash, Mod, ParentNodes, Seed) of
-        {ok, Block, _} ->
-            aec_parent_chain_cache:post_block(Block);
-        {error, no_parent_chain_agreement} = Err ->
-            %% TODO: decide what to do: this is likely happening because of
-            %% rapid parent chain reorganizations
-            lager:warning("Parent nodes are unable to reach consensus", []),
-            pass
+handle_cast({fetch_block_by_hash, Hash}, State) ->
+    case handle_fetch_block(fun fetch_block_by_hash/4, Hash, State) of
+        {ok, Block} -> aec_parent_chain_cache:post_block(Block);
+        {error, no_parent_chain_agreement} = Err -> pass
+    end,
+    {noreply, State};
+handle_cast({fetch_block_by_height, Height}, State) ->
+    case handle_fetch_block(fun fetch_block_by_height/4, Height, State) of
+        {ok, Block} -> aec_parent_chain_cache:post_block(Block);
+        {error, no_parent_chain_agreement} = Err -> pass
     end,
     {noreply, State}.
 
@@ -180,6 +196,15 @@ fetch_block_by_hash(Hash, Mod, ParentNodes, Seed) ->
     {Good, Errors} = pmap(Fun, ParentNodes, 10000),
     responses_consensus(Good, Errors, length(ParentNodes)).
 
+fetch_block_by_height(Height, Mod, ParentNodes, Seed) ->
+    FetchFun =
+        fun(Host, Port, User, Password, Seed) ->
+            Mod:get_header_by_height(Height, Host, Port, User, Password, Seed)
+        end,
+    Fun = fun(Parent) -> fetch_block(FetchFun, Parent, Seed) end,
+    {Good, Errors} = pmap(Fun, ParentNodes, 10000),
+    responses_consensus(Good, Errors, length(ParentNodes)).
+
 fetch_block(FetchFun, #{host := Host, port := Port,
                         user := User, password := Password} = Node, Seed) ->
     case FetchFun(Host, Port, User, Password, Seed) of
@@ -199,13 +224,18 @@ responses_consensus(Good0, _Errors = [], TotalCount) ->
                             Fun = fun(V) -> V + 1 end,
                             maps:update_with(Top,Fun,1,Acc)
                         end, #{}, Good),
-    {MostReturnedTop, Qty} = lists:last(lists:keysort(2, maps:to_list(Counts))),
-    %% Need Qty to be > half of the total number of configured nodes ??
-    if Qty > TotalCount div 2 ->
-            {_, Node} = lists:keyfind(MostReturnedTop, 1, Good),
-            {ok, MostReturnedTop, Node};
-       true ->
-            {error, no_parent_chain_agreement}
+    case maps:size(Counts) =:= 0 of
+        true ->
+            {error, no_parent_chain_agreement};
+        false ->
+            {MostReturnedTop, Qty} = lists:last(lists:keysort(2, maps:to_list(Counts))),
+            %% Need Qty to be > half of the total number of configured nodes ??
+            if Qty > TotalCount div 2 ->
+                    {_, Node} = lists:keyfind(MostReturnedTop, 1, Good),
+                    {ok, MostReturnedTop, Node};
+            true ->
+                    {error, no_parent_chain_agreement}
+        end
     end.
 
 %%fetch_commitments(Mod, #{host := Host, port := Port,
@@ -255,3 +285,17 @@ increment_seed(<<Num:?SEED_BYTES/unsigned-integer-unit:8>>) ->
 increment_seed(Bin) when is_binary(Bin) ->
     crypto:strong_rand_bytes(?SEED_BYTES).
 
+handle_fetch_block(Fun, Arg,
+            #state{ parent_hosts = ParentNodes,
+                    parent_conn_mod = Mod,
+                    fetch_interval = FetchInterval,
+                    rpc_seed = Seed}) ->
+    %% Parallel fetch top block from all configured parent chain nodes
+    case Fun(Arg, Mod, ParentNodes, Seed) of
+        {ok, Block, _} -> {ok, Block};
+        {error, no_parent_chain_agreement} = Err ->
+            %% TODO: decide what to do: this is likely happening because of
+            %% rapid parent chain reorganizations
+            lager:warning("Parent nodes are unable to reach consensus", []),
+            Err
+    end.

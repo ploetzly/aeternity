@@ -59,6 +59,32 @@ handle_request('GetCurrentKeyBlockHash',_,#{sim_name := SimName}) ->
     Hash = aec_chain_sim:top_key_block_hash(SimName),
     EncodedHash = aeser_api_encoder:encode(key_block_hash, Hash),
     {200, [], #{hash => EncodedHash}};
+handle_request('GetKeyBlockByHash',#{hash := EncHash},#{sim_name := SimName}) ->
+    case aeser_api_encoder:safe_decode(key_block_hash, EncHash) of
+        {error, _} -> {400, [], #{reason => <<"Invalid hash">>}};
+        {ok, Hash} ->
+            case aec_chain_sim:block_by_hash(SimName, Hash) of
+                {ok, KB} ->
+                    case encode_keyblock(KB, SimName) of
+                        {error, Reason} ->
+                            {404, [], Reason};
+                        {ok, EncodedKB} ->
+                            {200, [], EncodedKB}
+                    end;
+                error         -> {400, [], #{reason => <<"Hash not on main chain">>}}
+            end
+    end;
+handle_request('GetKeyBlockByHeight',#{height := Height},#{sim_name := SimName}) ->
+    case aec_chain_sim:block_by_height(SimName, Height) of
+        {ok, KB} ->
+            case encode_keyblock(KB, SimName) of
+                {error, Reason} ->
+                    {404, [], Reason};
+                {ok, EncodedKB} ->
+                    {200, [], EncodedKB}
+            end;
+        error         -> {400, [], #{reason => <<"Hash not on main chain">>}}
+    end;
 handle_request('GetCurrentGeneration', _, #{sim_name := SimName}) ->
     generation_rsp(SimName, aec_chain_sim:get_current_generation());
 handle_request('GetGenerationByHash',#{hash := EncHash},#{sim_name := SimName}) ->

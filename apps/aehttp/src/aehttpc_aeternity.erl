@@ -5,6 +5,7 @@
 %% Required exports for hyperchain:
 -export([get_latest_block/5,
          get_header_by_hash/6,
+         get_header_by_height/6,
          get_commitment_tx_in_block/7,
          get_commitment_tx_at_height/7,
          post_commitment/6]).
@@ -15,6 +16,9 @@ get_latest_block(Host, Port, _User, _Password, _Seed) ->
 
 get_header_by_hash(Hash, Host, Port, _User, _Password, _Seed) ->
     get_key_block_header(Hash, Host, Port).
+
+get_header_by_height(Height, Host, Port, _User, _Password, _Seed) ->
+    get_key_block_header_by_height(Height, Host, Port).
 
 get_commitment_tx_in_block(Host, Port, _User, _Password, _Seed, BlockHash, ParentHCAccountPubKey) ->
     {ok, #{<<"micro_blocks">> := MBs}} = get_generation(Host, Port, BlockHash),
@@ -52,6 +56,18 @@ get_key_block_header(Hash, Host, Port) ->
                <<"prev_key_hash">> := PrevHash,
                <<"height">> := Height}} =
             get_request(<<"/v3/key-blocks/hash/", Hash/binary>>, Host, Port, 5000),
+        {ok, Hash, PrevHash, Height}
+    catch E:R ->
+        {error, {E, R}}
+    end.
+
+get_key_block_header_by_height(Height, Host, Port) ->
+    HeightB = integer_to_binary(Height),
+    try
+        {ok, #{<<"hash">> := Hash,
+               <<"prev_key_hash">> := PrevHash,
+               <<"height">> := Height}} =
+            get_request(<<"/v3/key-blocks/height/", HeightB/binary>>, Host, Port, 5000),
         {ok, Hash, PrevHash, Height}
     catch E:R ->
         {error, {E, R}}
