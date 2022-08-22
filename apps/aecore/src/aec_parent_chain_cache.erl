@@ -56,7 +56,7 @@
     {
         child_top_height                    :: non_neg_integer(),
         child_start_height                  :: non_neg_integer(),
-        top_offset                          :: non_neg_integer(),
+        pc_confirmations                          :: non_neg_integer(),
         max_size                            :: non_neg_integer(),
         blocks          = #{}               :: #{non_neg_integer() => aec_parent_chain_block:block()},
         top_height      = 0                 :: non_neg_integer(),
@@ -109,24 +109,28 @@ get_state() ->
 init([StartHeight, Size]) ->
     init([StartHeight, Size, ?FOLLOW_CHILD_TOP]);
 init([StartHeight, Size, Strategy]) ->
+    aec_events:subscribe(top_changed),
     ChildHeight = aec_chain:top_height(),
     true = is_integer(ChildHeight),
     self() ! initialize_cache,
     {ok, #state{child_start_height  = StartHeight,
                 child_top_height    = ChildHeight,
-                top_offset          = 101, %% TODO: make this configurable
+                pc_confirmations    = 1, %% TODO: make this configurable
                 strategy            = Strategy,
                 max_size            = Size,
                 blocks              = #{}}}.
 
 -spec handle_call(any(), any(), state()) -> {reply, any(), state()}.
-handle_call({get_block_by_height, Height}, _From, State) ->
-    Reply = get_block(Height, State),
-%    case Reply of
-%        {error, _} ->
-%            aec_parent_connector:fetch_block_by_height(Height);
-%        {ok, _} -> pass
-%    end,
+handle_call({get_block_by_height, Height}, _From,
+            #state{pc_confirmations = Confirmations,
+                   top_height = TopHeight } = State) ->
+    Reply = 
+        case get_block(Height, State) of
+            {error, _} = Err -> Err;
+            {ok, Block} when Height > TopHeight - Confirmations ->
+                {error, {not_enough_confirmations, Block}};
+            {ok, _Block} = OK -> OK
+        end,
     {reply, Reply, State};
 handle_call(get_state, _From, State) ->
     Reply = {ok, state_to_map(State)},
@@ -150,14 +154,25 @@ handle_info(initialize_cache, #state{strategy = ?FOLLOW_PC_TOP} = State) ->
     {noreply, State};
 handle_info(initialize_cache, State) ->
     TargetHeight = target_parent_height(State),
-    case aec_parent_connector:fetch_block_by_height_blocking(TargetHeight) of
+    case aec_parent_connector:fetch_block_by_height(TargetHeight) of
         {ok, B} ->
             {noreply, post_block(B, State)};
+        {error, not_found} ->
+            lager:debug("Waiting for block ~p to be mined on the parent chain", [TargetHeight]),
+            timer:send_after(1000, initialize_cache),
+            {noreply, State};
         {error, no_parent_chain_agreement} ->
             lager:warning("Failed to initialize cache for height ~p", [TargetHeight]),
             timer:send_after(1000, initialize_cache),
             {noreply, State}
     end;
+handle_info({gproc_ps_event, top_changed, #{info := #{block_type := key,
+                                                      height := Height}}},
+            State) ->
+    %% TODO: post a commitment
+    {noreply, State#state{child_top_height = Height}};
+handle_info({gproc_ps_event, top_changed, _}, State) ->
+    {noreply, State};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -193,21 +208,20 @@ delete_block(Height, #state{blocks = Blocks} = State) ->
 
 state_to_map(#state{child_start_height = StartHeight,
                     child_top_height   = ChildHeight,
-                    top_offset   = TopOffset,
+                    pc_confirmations   = Confirmations,
                     max_size     = MaxSize,
                     blocks       = Blocks, 
                     top_height   = TopHeight}) ->
     #{  child_start_height => StartHeight,
         child_top_height   => ChildHeight,
-        top_offset         => TopOffset,
+        pc_confirmations   => Confirmations,
         max_size     => MaxSize,
         blocks       => Blocks, 
         top_height   => TopHeight}.
 
 target_parent_height(#state{child_start_height    = StartHeight,
-                            child_top_height      = ChildHeight,
-                            top_offset            = TopOffset}) ->
-    ChildHeight + StartHeight - TopOffset.
+                            child_top_height      = ChildHeight}) ->
+    ChildHeight + StartHeight.
 
 post_block(Block, #state{top_height = TopHeight,
                          max_size = MaxSize,
@@ -244,18 +258,50 @@ post_block(Block, #state{top_height = TopHeight,
                         delete_block(TryGCHeight, State1);
                     false -> State1
                 end,
-            PrevHeight = BlockHeight - 1,
-            case PrevHeight > GCHeight of
-                false -> pass;
-                true ->
-                    %% check if the previous block is missing
-                    case get_block(BlockHeight - 1, State2) of
-                        {ok, _} -> pass;
-                        {error, _} -> %% missing block detected
-                            lager:debug("Missing block with height ~p detected, fetching it", [PrevHeight]),
-                            aec_parent_connector:fetch_block_by_hash(aec_parent_chain_block:prev_hash(Block))
-                    end
-            end,
-            State2#state{top_height = max(TopHeight, BlockHeight)}
+            State3 = State2#state{top_height = max(TopHeight, BlockHeight)},
+            maybe_fetch_previous_block(BlockHeight, State3),
+            maybe_fetch_next_block(BlockHeight, State3),
+            State3
+            
+    end.
+
+maybe_fetch_previous_block(BlockHeight, #state{ strategy = _AnyStrategy,
+                                                top_height = TopHeight,
+                                                max_size = MaxSize
+                                          } = State) ->
+    GCHeight = max(TopHeight - MaxSize, - 1),
+    PrevHeight = BlockHeight - 1,
+    case PrevHeight > GCHeight of
+        true ->
+            %% check if the previous block is missing
+            case get_block(PrevHeight, State) of
+                {ok, _} -> pass;
+                {error, _} -> %% missing block detected
+                    lager:debug("Missing block with height ~p detected, requesting it", [PrevHeight]),
+                    aec_parent_connector:request_block_by_height(PrevHeight)
+            end;
+        false ->
+            pass
+    end.
+
+maybe_fetch_next_block(BlockHeight, #state{strategy = ?FOLLOW_PC_TOP} = State) ->
+    pass;
+maybe_fetch_next_block(BlockHeight,
+                       #state{strategy = ?FOLLOW_CHILD_TOP,
+                              max_size = MaxSize } = State) ->
+    TargetHeight = target_parent_height(State),
+    MaxBlockToRequest = TargetHeight + MaxSize,
+    NextHeight = BlockHeight + 1,
+    case MaxBlockToRequest > BlockHeight of
+        true when NextHeight =< MaxBlockToRequest ->
+            case get_block(NextHeight, State) of
+                {ok, _} -> pass;
+                {error, not_in_cache} ->
+                    lager:debug("Populating the cache forward, requesting block with height ~p",
+                                [NextHeight]),
+                    aec_parent_connector:request_block_by_height(NextHeight)
+            end;
+        _ -> %% cache is already full
+            pass
     end.
 

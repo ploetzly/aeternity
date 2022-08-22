@@ -64,11 +64,13 @@ get_key_block_header(Hash, Host, Port) ->
 get_key_block_header_by_height(Height, Host, Port) ->
     HeightB = integer_to_binary(Height),
     try
-        {ok, #{<<"hash">> := Hash,
-               <<"prev_key_hash">> := PrevHash,
-               <<"height">> := Height}} =
-            get_request(<<"/v3/key-blocks/height/", HeightB/binary>>, Host, Port, 5000),
-        {ok, Hash, PrevHash, Height}
+        case  get_request(<<"/v3/key-blocks/height/", HeightB/binary>>, Host, Port, 5000) of
+            {ok, #{ <<"hash">> := Hash,
+                    <<"prev_key_hash">> := PrevHash,
+                    <<"height">> := Height}} ->
+                {ok, Hash, PrevHash, Height};
+            {error, not_found} -> {error, not_found}
+        end
     catch E:R ->
         {error, {E, R}}
     end.
@@ -167,9 +169,13 @@ get_request(Path, Host, Port, Timeout) ->
     HTTPOpt = [{timeout, Timeout}],
     Opt = [],
     lager:info("Req: ~p, with URL: ~ts", [Req, Url]),
-    {ok, {{_, 200 = _Code, _}, _, Res}} = httpc:request(get, Req, HTTPOpt, Opt),
-    lager:info("Req: ~p, Res: ~p with URL: ~ts", [Req, Res, Url]),
-    {ok, jsx:decode(list_to_binary(Res), [return_maps])}
+    case httpc:request(get, Req, HTTPOpt, Opt) of
+        {ok, {{_, 200 = _Code, _}, _, Res}} ->
+            lager:info("Req: ~p, Res: ~p with URL: ~ts", [Req, Res, Url]),
+            {ok, jsx:decode(list_to_binary(Res), [return_maps])};
+        {ok, {{_, 404 = _Code, _}, _, "{\"reason\":\"Block not found\"}"}} ->
+            {error, not_found}
+    end
   catch E:R:S ->
     lager:info("Error: ~p Reason: ~p Stacktrace: ~p", [E, R, S]),
     {error, {E, R, S}}

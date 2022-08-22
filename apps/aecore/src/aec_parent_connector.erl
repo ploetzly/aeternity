@@ -22,10 +22,12 @@
 %% Use in test only
 -export([trigger_fetch/0]).
 
--export([fetch_block_by_hash/1,
-         fetch_block_by_height/1,
-         fetch_block_by_hash_blocking/1,
-         fetch_block_by_height_blocking/1]).
+-export([%% async getting of blocks
+         request_block_by_hash/1,
+         request_block_by_height/1,
+         %% blocking getting of blocks
+         fetch_block_by_hash/1,
+         fetch_block_by_height/1]).
 
 %% Callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -75,18 +77,18 @@ stop() ->
 trigger_fetch() ->
     gen_server:call(?SERVER, trigger_fetch).
 
+request_block_by_hash(Hash) ->
+    gen_server:cast(?SERVER, {request_block_by_hash, Hash}).
+
+request_block_by_height(Height) ->
+    gen_server:cast(?SERVER, {request_block_by_height, Height}).
+
+%% this blocks the caller process, use with caution
 fetch_block_by_hash(Hash) ->
-    gen_server:cast(?SERVER, {fetch_block_by_hash, Hash}).
-
-fetch_block_by_height(Height) ->
-    gen_server:cast(?SERVER, {fetch_block_by_height, Height}).
-
-%% this blocks the process, use with caution
-fetch_block_by_hash_blocking(Hash) ->
     gen_server:call(?SERVER, {fetch_block_by_hash, Hash}).
 
-%% this blocks the process, use with caution
-fetch_block_by_height_blocking(Height) ->
+%% this blocks the caller process, use with caution
+fetch_block_by_height(Height) ->
     gen_server:call(?SERVER, {fetch_block_by_height, Height}).
 
 %%%=============================================================================
@@ -119,15 +121,17 @@ handle_call(_Request, _From, State) ->
     {reply, Reply, State}.
 
 -spec handle_cast(any(), state()) -> {noreply, state()}.
-handle_cast({fetch_block_by_hash, Hash}, State) ->
+handle_cast({request_block_by_hash, Hash}, State) ->
     case handle_fetch_block(fun fetch_block_by_hash/4, Hash, State) of
         {ok, Block} -> aec_parent_chain_cache:post_block(Block);
+        {error, not_found} = Err -> pass;
         {error, no_parent_chain_agreement} = Err -> pass
     end,
     {noreply, State};
-handle_cast({fetch_block_by_height, Height}, State) ->
+handle_cast({request_block_by_height, Height}, State) ->
     case handle_fetch_block(fun fetch_block_by_height/4, Height, State) of
         {ok, Block} -> aec_parent_chain_cache:post_block(Block);
+        {error, not_found} = Err -> pass;
         {error, no_parent_chain_agreement} = Err -> pass
     end,
     {noreply, State}.
@@ -218,23 +222,30 @@ fetch_block(FetchFun, #{host := Host, port := Port,
 %% Check:
 %% * multiple successful replies
 %% * majority agree on a block
-responses_consensus(Good0, _Errors = [], TotalCount) ->
+responses_consensus(Good0, _Errors, TotalCount) ->
+    MinRequired = TotalCount div 2,
     Good = [{Top, Node} || {ok, {Top, Node}} <- Good0],
     Counts = lists:foldl(fun({Top, _Node}, Acc) ->
                             Fun = fun(V) -> V + 1 end,
                             maps:update_with(Top,Fun,1,Acc)
                         end, #{}, Good),
+    NotFoundsCnt = length([1 || {error, not_found} <- Good0]),
     case maps:size(Counts) =:= 0 of
+        true when NotFoundsCnt > MinRequired ->
+            {error, not_found};
         true ->
             {error, no_parent_chain_agreement};
         false ->
             {MostReturnedTop, Qty} = lists:last(lists:keysort(2, maps:to_list(Counts))),
             %% Need Qty to be > half of the total number of configured nodes ??
-            if Qty > TotalCount div 2 ->
-                    {_, Node} = lists:keyfind(MostReturnedTop, 1, Good),
-                    {ok, MostReturnedTop, Node};
+            if Qty > MinRequired ->
+                {_, Node} = lists:keyfind(MostReturnedTop, 1, Good),
+                {ok, MostReturnedTop, Node};
             true ->
-                    {error, no_parent_chain_agreement}
+                case NotFoundsCnt > MinRequired of
+                    true -> {error, not_found};
+                    false -> {error, no_parent_chain_agreement}
+                end
         end
     end.
 
@@ -293,6 +304,7 @@ handle_fetch_block(Fun, Arg,
     %% Parallel fetch top block from all configured parent chain nodes
     case Fun(Arg, Mod, ParentNodes, Seed) of
         {ok, Block, _} -> {ok, Block};
+        {error, not_found} -> {error, not_found};
         {error, no_parent_chain_agreement} = Err ->
             %% TODO: decide what to do: this is likely happening because of
             %% rapid parent chain reorganizations

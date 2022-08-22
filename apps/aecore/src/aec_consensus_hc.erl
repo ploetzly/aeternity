@@ -85,6 +85,7 @@ start(Config) ->
         #{<<"type">> := PCType,
           <<"fetch_interval">> := FetchInterval,
           <<"nodes">> := Nodes0,
+          <<"confirmations">> := Confirmations,
           <<"start_height">> := StartHeight}} = Config,
     Stakers =
         lists:map(
@@ -121,8 +122,8 @@ start(Config) ->
             end,
             Nodes0),
     CacheSize = 2000, %% TODO: make it configurable
-    aec_parent_chain_cache:start_link(StartHeight, CacheSize),
     aec_parent_connector:start_link(ParentConnMod, FetchInterval, ParentHosts),
+    aec_parent_chain_cache:start_link(StartHeight, CacheSize),
     ok.
 
 stop() -> ok.
@@ -158,7 +159,7 @@ state_pre_transform_key_node(Node, Trees) ->
     Height = aetx_env:height(TxEnv),
     PCHeight = Height + pc_start_height(),
     case aec_parent_chain_cache:get_block_by_height(PCHeight) of
-        {error, not_in_cache} ->
+        {error, _} ->
             throw({bypass, {error, parent_chain_block_not_synced}});
         {ok, Block} ->
             Hash = aec_parent_chain_block:hash(Block),
@@ -291,6 +292,7 @@ generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := Ex
             case SignModule:set_candidate(Leader) of
                 {error, key_not_found} ->
                     timer:sleep(1000),
+                    lager:info("ASDF!!!! NOT LEADER", []),
                     {continue_mining, {error, no_solution} };
                 ok ->
                     Candidate1 = aec_headers:set_beneficiary(Candidate, Leader),
@@ -303,8 +305,9 @@ generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := Ex
                     Seal = aec_headers:deserialize_pow_evidence_from_binary(<<Signature/binary, Padding/binary>>),
                     {continue_mining, {ok, Seal}}
             end;
-        {error, not_in_cache} ->
+        {error, _} ->
             timer:sleep(1000),
+            lager:info("ASDF!!!!", []),
             {continue_mining, {error, no_solution} }
     end.
 
@@ -535,8 +538,10 @@ next_beneficiary() ->
                 ok ->
                     {ok, Leader}
             end;
-        {error, not_in_cache} ->
+        {error, _} ->
             timer:sleep(1000),
+            lager:info("ASDF next beneficiary, for Height ~p, not in Cache ~p",
+                       [Height, PCHeight]),
             {error, not_in_cache}
     end.
 

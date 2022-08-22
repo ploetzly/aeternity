@@ -116,24 +116,24 @@ ae_sim_test_() ->
                         after 100 -> ok
                         end,
                     {ok, Block1} =
-                        aec_parent_connector:fetch_block_by_height_blocking(1),
+                        aec_parent_connector:fetch_block_by_height(1),
                     {ok, Block1} =
-                        aec_parent_connector:fetch_block_by_hash_blocking(
+                        aec_parent_connector:fetch_block_by_hash(
                             aec_parent_chain_block:hash(Block1)),
                     {ok, Block2} =
-                        aec_parent_connector:fetch_block_by_height_blocking(2),
+                        aec_parent_connector:fetch_block_by_height(2),
                     {ok, Block2} =
-                        aec_parent_connector:fetch_block_by_hash_blocking(
+                        aec_parent_connector:fetch_block_by_hash(
                             aec_parent_chain_block:hash(Block2)),
                     {error, no_parent_chain_agreement} =
-                        aec_parent_connector:fetch_block_by_height_blocking(3),
+                        aec_parent_connector:fetch_block_by_height(3),
                     {error, no_parent_chain_agreement} =
-                        aec_parent_connector:fetch_block_by_hash_blocking(
+                        aec_parent_connector:fetch_block_by_hash(
                             aec_parent_chain_block:hash(Block3)),
                     %% get node2 to the same top as node3
                     {ok, KB3} = PostPCBlock(Spec2),
                     {ok, Block3} =
-                        aec_parent_connector:fetch_block_by_height_blocking(3),
+                        aec_parent_connector:fetch_block_by_height(3),
                     %% trigger fetch again - 2 out 3 nodes should agree on block3 
                     aec_parent_connector:trigger_fetch(),
                     %% no consensus

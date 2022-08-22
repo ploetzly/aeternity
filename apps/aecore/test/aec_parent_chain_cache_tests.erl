@@ -11,7 +11,6 @@
 
 -define(TEST_MODULE, aec_parent_chain_cache).
 
--define(OFFSET, 101).
 -define(FOLLOW_PC_TOP, follow_parent_chain_top).
 -define(FOLLOW_CHILD_TOP, sync_child_chain).
 
@@ -24,16 +23,36 @@ follow_parent_chain_strategy_test_() ->
      fun() ->
             meck:new(aec_chain, []),
             meck:expect(aec_chain, top_height, fun() -> 0 end),
-            mock_parent_connector()
+            mock_parent_connector(),
+            mock_events()
      end,
      fun(_) ->
+            unmock_events(),
             meck:unload(aec_chain),
             unmock_parent_connector()
      end,
      [ {"Cache the first 100 blocks", fun cache_first_100/0},
        {"Cache blocks while deleting older ones", fun gc_older_blocks/0},
        {"Fill gaps in the parent chain", fun fill_gaps/0},
-       {"Fill gaps triggers GC", fun fill_gaps_triggers_gc/0}
+       {"Fill gaps triggers GC", fun fill_gaps_triggers_gc/0},
+       {"Child top change does not impact cache", fun child_top_change_while_following_pc/0}
+     ]}.
+
+follow_child_chain_strategy_test_() ->
+    {foreach,
+     fun() ->
+            meck:new(aec_chain, []),
+            meck:expect(aec_chain, top_height, fun() -> 0 end),
+            mock_parent_connector(),
+            mock_events()
+     end,
+     fun(_) ->
+            unmock_events(),
+            meck:unload(aec_chain),
+            unmock_parent_connector()
+     end,
+     [ {"Cache all the blocks above current child height", fun cache_all_above_child_height/0}
+
      ]}.
 
 %%%===================================================================
@@ -41,12 +60,13 @@ follow_parent_chain_strategy_test_() ->
 %%%===================================================================
 
 cache_first_100() ->
+    Confirmations = 1,
     Test =
         fun(StartHeight, CacheMaxSize) ->
-            {ok, _Pid} = start_cache(StartHeight, CacheMaxSize, ?FOLLOW_PC_TOP),
+            {ok, _CachePid} = start_cache(StartHeight, CacheMaxSize, ?FOLLOW_PC_TOP),
             {ok, #{ child_start_height := StartHeight,
                     child_top_height   := 0,
-                    top_offset         := ?OFFSET,
+                    pc_confirmations   := Confirmations,
                     max_size           := CacheMaxSize,
                     blocks             := EmptyBlocks, 
                     top_height         := 0}} = ?TEST_MODULE:get_state(),
@@ -56,8 +76,8 @@ cache_first_100() ->
                     Height0 = max(0, Height - 1),
                     Block = block_by_height(Height),
                     {ok, #{ child_start_height := StartHeight,
-                            child_top_height   := 0,
-                            top_offset         := ?OFFSET,
+                            child_top_height   := ChildTop,
+                            pc_confirmations   := Confirmations,
                             max_size           := CacheMaxSize,
                             blocks             := Blocks0,
                             top_height         := Height0}} = ?TEST_MODULE:get_state(),
@@ -67,25 +87,32 @@ cache_first_100() ->
                     {error, not_in_cache} = ?TEST_MODULE:get_block_by_height(Height),
                     ok = ?TEST_MODULE:post_block(Block),
                     {ok, #{ child_start_height := StartHeight,
-                            child_top_height   := 0,
-                            top_offset         := ?OFFSET,
+                            child_top_height   := ChildTop,
+                            pc_confirmations   := Confirmations,
                             max_size           := CacheMaxSize,
                             blocks             := Blocks,
                             top_height         := Height}} = ?TEST_MODULE:get_state(),
                     Block = maps:get(Height, Blocks),
                     ?assertEqual(map_size(Blocks), Height + 1),
-                    {ok, Block} = ?TEST_MODULE:get_block_by_height(Height)
+                    {error, {not_enough_confirmations, Block}} = ?TEST_MODULE:get_block_by_height(Height),
+                    case Height - Confirmations of
+                        MaturedH when MaturedH > -1 ->
+                            MatureBlock = block_by_height(MaturedH),
+                            {ok, MatureBlock} = ?TEST_MODULE:get_block_by_height(MaturedH);
+                        _ -> pass
+                    end
                 end,
-                lists:seq(0, 100)),
+                lists:seq(0, 100 - Confirmations)),
             ?TEST_MODULE:stop()
         end,
     %% test with cache sizes greater than 100, we will test GC in a different test
-    Test(?OFFSET + 0, 1000),
-    Test(?OFFSET + 1337, 1234), %% initially the start height plays no role at which blocks we cache
+    Test(0, 1000),
+    Test(1337, 1234), %% initially the start height plays no role at which blocks we cache
     ok.
 
 gc_older_blocks() ->
     CacheMaxSize = 20,
+    Confirmations = 1,
     {ok, _Pid} = start_cache(0, CacheMaxSize, ?FOLLOW_PC_TOP),
     %% post CacheMaxSize blocks - the state is growing
     lists:foreach(
@@ -102,7 +129,12 @@ gc_older_blocks() ->
     lists:foreach(
         fun(Height) ->
             Block = block_by_height(Height),
-            ?assertMatch({ok, Block}, ?TEST_MODULE:get_block_by_height(Height))
+            {ok, #{top_height := ParentTop}} = ?TEST_MODULE:get_state(),
+            IsMature = Height =< ParentTop - Confirmations,
+            case ?TEST_MODULE:get_block_by_height(Height) of
+                {ok, Block} when IsMature -> ok;
+                {error, {not_enough_confirmations, Block}} when not IsMature -> ok
+            end
         end,
         lists:seq(0, CacheMaxSize - 1)),
     %% push blocks one by one, while checking one is GCed each time
@@ -113,7 +145,7 @@ gc_older_blocks() ->
             Block = block_by_height(Height),
             ok = ?TEST_MODULE:post_block(Block),
             {error, not_in_cache} = ?TEST_MODULE:get_block_by_height(DeleteHeight),
-            {ok, Block} = ?TEST_MODULE:get_block_by_height(Height),
+            {error, {not_enough_confirmations, Block}} = ?TEST_MODULE:get_block_by_height(Height),
             {ok, #{blocks := Blocks}} = ?TEST_MODULE:get_state(),
             ?assertEqual(map_size(Blocks), CacheMaxSize)
         end,
@@ -122,6 +154,7 @@ gc_older_blocks() ->
     ok.
 
 fill_gaps() ->
+    Confirmations = 1,
     CacheMaxSize = 2000, %% we will test GC when catching up gaps in a different test
     {ok, _Pid} = start_cache(0, CacheMaxSize, ?FOLLOW_PC_TOP),
     %% the state is empty
@@ -133,7 +166,7 @@ fill_gaps() ->
     %% give the cache some time to fetch it
     timer:sleep(10),
     {ok, _} = ?TEST_MODULE:get_block_by_height(0),
-    {ok, _} = ?TEST_MODULE:get_block_by_height(1),
+    {error, {not_enough_confirmations, _}} = ?TEST_MODULE:get_block_by_height(1),
     %% skip a few blocks, the cache catches up still
     DistantBlockHeight = 10,
     ok = ?TEST_MODULE:post_block(block_by_height(DistantBlockHeight)),
@@ -142,7 +175,12 @@ fill_gaps() ->
     lists:foreach(
         fun(Height) ->
             Block = block_by_height(Height),
-            {ok, Block} = ?TEST_MODULE:get_block_by_height(Height)
+            {ok, #{top_height := ParentTop}} = ?TEST_MODULE:get_state(),
+            IsMature = Height =< ParentTop - Confirmations,
+            case ?TEST_MODULE:get_block_by_height(Height) of
+                {ok, Block} when IsMature -> ok;
+                {error, {not_enough_confirmations, Block}} when not IsMature -> ok
+            end
         end,
         lists:seq(0, DistantBlockHeight)),
     %% no GC triggered
@@ -152,7 +190,8 @@ fill_gaps() ->
     ok.
 
 fill_gaps_triggers_gc() ->
-    CacheMaxSize = 10, %% we will test GC when catching up gaps in a different test
+    CacheMaxSize = 10,
+    Confirmations = 1,
     {ok, _Pid} = start_cache(0, CacheMaxSize, ?FOLLOW_PC_TOP),
     %% the state is empty
     {ok, #{blocks := EmptyBlocks}} = ?TEST_MODULE:get_state(),
@@ -172,7 +211,13 @@ fill_gaps_triggers_gc() ->
             lists:foreach(
                 fun(Height) ->
                     Block = block_by_height(Height),
-                    {ok, Block} = ?TEST_MODULE:get_block_by_height(Height)
+                    {ok, #{top_height := ParentTop}} = ?TEST_MODULE:get_state(),
+                    IsMature = Height =< ParentTop - Confirmations,
+                    case ?TEST_MODULE:get_block_by_height(Height) of
+                        {ok, Block} when IsMature -> ok;
+                        {error, not_in_cache} -> -233 = Height;
+                        {error, {not_enough_confirmations, Block}} when not IsMature -> ok
+                    end
                 end,
                 lists:seq(DistantBlockHeight - CacheMaxSize + 1, DistantBlockHeight)),
             {ok, #{blocks := Blocks}} = ?TEST_MODULE:get_state(),
@@ -184,6 +229,52 @@ fill_gaps_triggers_gc() ->
     TestWithDistantBlock(20),
     %% test a huge gap
     TestWithDistantBlock(40),
+    ?TEST_MODULE:stop(),
+    ok.
+
+child_top_change_while_following_pc() ->
+    CacheMaxSize = 100,
+    {ok, CachePid} = start_cache(0, CacheMaxSize, ?FOLLOW_PC_TOP),
+    %% the state is empty
+    {ok, #{ child_start_height := StartHeight,
+            child_top_height   := 0,
+            blocks             := EmptyBlocks, 
+            top_height         := 0}} = ?TEST_MODULE:get_state(),
+    ?assertEqual(map_size(EmptyBlocks), 0),
+    ChildTop1 = 10,
+    child_new_top(CachePid, ChildTop1),
+    %% the state is still empty, the child top had changed
+    {ok, #{ child_start_height := StartHeight,
+            child_top_height   := ChildTop1,
+            blocks             := EmptyBlocks, 
+            top_height         := 0}} = ?TEST_MODULE:get_state(),
+    SomeHeight = 10,
+    ok = ?TEST_MODULE:post_block(block_by_height(SomeHeight)),
+    timer:sleep(10),
+    {ok, #{ child_start_height := StartHeight,
+            child_top_height   := ChildTop1,
+            blocks             := NonEmptyBlocks, 
+            top_height         := SomeHeight}} = ?TEST_MODULE:get_state(),
+    ?assertEqual(map_size(NonEmptyBlocks), SomeHeight + 1),
+    ?TEST_MODULE:stop(),
+    ok.
+
+cache_all_above_child_height() ->
+    CacheMaxSize = 20,
+    StartHeight = 200,
+    {ok, CachePid} = start_cache(StartHeight, CacheMaxSize), %% by default - follow child top
+    timer:sleep(10),
+    %% the cache is full
+    ExpectedTopHeight1 = StartHeight - 1,
+    {ok, #{ child_start_height := StartHeight,
+            child_top_height   := 0} = Res1} = ?TEST_MODULE:get_state(),
+    test_follow_child_cache_consistency(Res1),
+    ChildTop1 = 10,
+    child_new_top(CachePid, ChildTop1),
+    timer:sleep(10),
+    {ok, #{ child_start_height := StartHeight,
+            child_top_height   := ChildTop1,
+            top_height         := CacheSize}} = ?TEST_MODULE:get_state(),
     ?TEST_MODULE:stop(),
     ok.
 
@@ -225,15 +316,15 @@ block_by_hash(Hash) ->
 
 mock_parent_connector() ->
     meck:new(aec_parent_connector, []),
-    meck:expect(aec_parent_connector, fetch_block_by_hash,
-                fun(Hash) ->
+    meck:expect(aec_parent_connector, request_block_by_height,
+                fun(Height) ->
                     spawn(
                         fun() ->
-                            Block = block_by_hash(Hash),
+                            Block = block_by_height(Height),
                             ?TEST_MODULE:post_block(Block)
                         end)
                     end),
-    meck:expect(aec_parent_connector, fetch_block_by_height_blocking,
+    meck:expect(aec_parent_connector, fetch_block_by_height,
                 fun(Height) ->
                     Block = block_by_height(Height),
                     {ok, Block}
@@ -241,3 +332,31 @@ mock_parent_connector() ->
 
 unmock_parent_connector() ->
     meck:unload(aec_parent_connector).
+
+mock_events() ->
+    meck:new(aec_events, []),
+    meck:expect(aec_events, subscribe,
+                fun(top_changed) -> ok end),
+    ok.
+
+unmock_events() ->
+    meck:unload(aec_events).
+
+child_new_top(CachePid, Height) ->
+    CachePid ! {gproc_ps_event, top_changed, #{info => #{block_type => key,
+                                                         height => Height}}}.
+
+test_follow_child_cache_consistency(#{ child_start_height := StartHeight,
+                                       child_top_height   := ChildTop,
+                                       blocks             := Blocks,
+                                       max_size           := CacheMaxSize,
+                                       top_height         := TopHeight}) ->
+    ?assertEqual(CacheMaxSize, map_size(Blocks)),
+    CacheExpectedStart = min(ChildTop + StartHeight, TopHeight - CacheMaxSize),
+    ?assertEqual(CacheExpectedStart, lists:min(maps:keys(Blocks))),
+    CacheExpectedEnd = CacheExpectedStart + CacheMaxSize - 1,
+    ?assertEqual(CacheExpectedEnd, lists:max(maps:keys(Blocks))),
+    lists:foreach(
+        fun(Height) -> {true, Height} = {maps:is_key(Height, Blocks), Height} end,
+        lists:seq(CacheExpectedEnd, CacheExpectedEnd)),
+    ok.
