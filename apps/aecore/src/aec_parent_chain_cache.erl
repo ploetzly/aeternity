@@ -292,8 +292,8 @@ maybe_fetch_next_block(BlockHeight,
     TargetHeight = target_parent_height(State),
     MaxBlockToRequest = TargetHeight + MaxSize,
     NextHeight = BlockHeight + 1,
-    case MaxBlockToRequest > BlockHeight of
-        true when NextHeight =< MaxBlockToRequest ->
+    case MaxBlockToRequest > BlockHeight andalso NextHeight < MaxBlockToRequest of
+        true ->
             case get_block(NextHeight, State) of
                 {ok, _} -> pass;
                 {error, not_in_cache} ->

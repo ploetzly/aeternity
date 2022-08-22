@@ -265,8 +265,9 @@ cache_all_above_child_height() ->
     {ok, CachePid} = start_cache(StartHeight, CacheMaxSize), %% by default - follow child top
     timer:sleep(10),
     %% the cache is full
-    ExpectedTopHeight1 = StartHeight - 1,
+    ExpectedTopHeight = StartHeight + CacheMaxSize - 1,
     {ok, #{ child_start_height := StartHeight,
+            top_height         := ExpectedTopHeight,
             child_top_height   := 0} = Res1} = ?TEST_MODULE:get_state(),
     test_follow_child_cache_consistency(Res1),
     ChildTop1 = 10,
@@ -352,7 +353,7 @@ test_follow_child_cache_consistency(#{ child_start_height := StartHeight,
                                        max_size           := CacheMaxSize,
                                        top_height         := TopHeight}) ->
     ?assertEqual(CacheMaxSize, map_size(Blocks)),
-    CacheExpectedStart = min(ChildTop + StartHeight, TopHeight - CacheMaxSize),
+    CacheExpectedStart = min(ChildTop + StartHeight, TopHeight - CacheMaxSize + 1),
     ?assertEqual(CacheExpectedStart, lists:min(maps:keys(Blocks))),
     CacheExpectedEnd = CacheExpectedStart + CacheMaxSize - 1,
     ?assertEqual(CacheExpectedEnd, lists:max(maps:keys(Blocks))),
