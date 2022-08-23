@@ -12,13 +12,11 @@
 %% - cache the view of the parent chain's blocks. The `aec_parent_connector`
 %%   reports any new blocks and they are stored in a cache.
 %%   `aec_parent_connector` is also used for fetching blocks as we go along
-%% - keeps track of current child chain top and fetches releated blocks. There
-%%   are two strategies to be followed:
-%%   - the node is syncing blocks from the past. In this case the cache is
-%%     loading the lowest required parent chain block and then starts syncing
-%%   upwards till it reaches the top
-%%   - the node is fully synced and we are waiting for notifications from the
-%%     parent chain nodes for top changes
+%% - keeps track of current child chain top and fetches releated blocks. The
+%%   node is syncing blocks from the past. In this case the cache is loading
+%%   the lowest required parent chain block and then starts syncing upwards
+%%   till it reaches the top. After that the node is fully synced and we are
+%%   waiting for notifications from the parent chain nodes for top changes
 %% - provides parent chain blocks to the consensus module on demand. If it
 %%   asks for an older block, it is being fetched as well. This would take some
 %%   more time as a couple of blocks are being queried
@@ -33,9 +31,6 @@
 %% External API
 -export([start_link/2, stop/0]).
 
-%% used in tests
--export([start_link/3]).
-
 %% Callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
             terminate/2, code_change/3]).
@@ -49,9 +44,6 @@
 -define(FOLLOW_PC_TOP, follow_parent_chain_top).
 -define(FOLLOW_CHILD_TOP, sync_child_chain).
 
--type strategy() :: ?FOLLOW_CHILD_TOP | ?FOLLOW_PC_TOP.
-
-
 -record(state,
     {
         child_top_height                    :: non_neg_integer(),
@@ -59,8 +51,7 @@
         pc_confirmations                          :: non_neg_integer(),
         max_size                            :: non_neg_integer(),
         blocks          = #{}               :: #{non_neg_integer() => aec_parent_chain_block:block()},
-        top_height      = 0                 :: non_neg_integer(),
-        strategy        = ?FOLLOW_CHILD_TOP :: strategy()
+        top_height      = 0                 :: non_neg_integer()
     }).
 -type state() :: #state{}.
 
@@ -75,13 +66,6 @@
 start_link(Height, Size) ->
     Args = [Height, Size],
     gen_server:start_link({local, ?SERVER}, ?MODULE, Args, []).
-
--spec start_link(non_neg_integer(), non_neg_integer(), strategy()) ->
-    {ok, pid()} | {error, {already_started, pid()}} | {error, Reason::any()}.
-start_link(Height, Size, Strategy) ->
-    Args = [Height, Size, Strategy],
-    gen_server:start_link({local, ?SERVER}, ?MODULE, Args, []).
-
 
 stop() ->
     gen_server:stop(?SERVER).
@@ -107,8 +91,6 @@ get_state() ->
 
 -spec init([any()]) -> {ok, #state{}}.
 init([StartHeight, Size]) ->
-    init([StartHeight, Size, ?FOLLOW_CHILD_TOP]);
-init([StartHeight, Size, Strategy]) ->
     aec_events:subscribe(top_changed),
     ChildHeight = aec_chain:top_height(),
     true = is_integer(ChildHeight),
@@ -116,7 +98,6 @@ init([StartHeight, Size, Strategy]) ->
     {ok, #state{child_start_height  = StartHeight,
                 child_top_height    = ChildHeight,
                 pc_confirmations    = 1, %% TODO: make this configurable
-                strategy            = Strategy,
                 max_size            = Size,
                 blocks              = #{}}}.
 
@@ -140,18 +121,13 @@ handle_call(_Request, _From, State) ->
     {reply, Reply, State}.
 
 -spec handle_cast(any(), state()) -> {noreply, state()}.
-handle_cast({post_block, Block}, #state{top_height = TopHeight,
-                                        max_size = MaxSize } = State0) ->
+handle_cast({post_block, Block}, #state{} = State0) ->
     State = post_block(Block, State0),
     {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
 -spec handle_info(any(), state()) -> {noreply, state()}.
-handle_info(check_parent, #state{ } = State) ->
-    {noreply, State#state{}};
-handle_info(initialize_cache, #state{strategy = ?FOLLOW_PC_TOP} = State) ->
-    {noreply, State};
 handle_info(initialize_cache, State) ->
     TargetHeight = target_parent_height(State),
     case aec_parent_connector:fetch_block_by_height(TargetHeight) of
@@ -168,9 +144,18 @@ handle_info(initialize_cache, State) ->
     end;
 handle_info({gproc_ps_event, top_changed, #{info := #{block_type := key,
                                                       height := Height}}},
-            State) ->
+            #state{child_top_height = OldHeight,
+                   max_size = MaxSize} = State0) ->
+    State1 = State0#state{child_top_height = Height},
+    State =
+        case OldHeight + MaxSize < Height of
+            true -> State1#state{blocks = #{}}; %% we flush the whole state - this should not happen
+            false -> State1
+        end,
+    TargetHeight = target_parent_height(State),
+    aec_parent_connector:request_block_by_height(TargetHeight),
     %% TODO: post a commitment
-    {noreply, State#state{child_top_height = Height}};
+    {noreply, State};
 handle_info({gproc_ps_event, top_changed, _}, State) ->
     {noreply, State};
 handle_info(_Info, State) ->
@@ -198,9 +183,14 @@ get_block(Height, #state{blocks = Blocks}) ->
     case maps:find(Height, Blocks) of
         {ok, _Block} = OK -> OK;
         error ->
-            %% TODO: fetch the block
             {error, not_in_cache}
     end.
+    
+-spec max_block(state()) -> non_neg_integer() | empty_cache.
+max_block(#state{blocks = Blocks}) when map_size(Blocks) =:= 0 ->
+    empty_cache;
+max_block(#state{blocks = Blocks}) ->
+    lists:max(maps:keys(Blocks)).
     
 -spec delete_block(non_neg_integer(), state()) -> state().
 delete_block(Height, #state{blocks = Blocks} = State) ->
@@ -223,55 +213,59 @@ target_parent_height(#state{child_start_height    = StartHeight,
                             child_top_height      = ChildHeight}) ->
     ChildHeight + StartHeight.
 
-post_block(Block, #state{top_height = TopHeight,
-                         max_size = MaxSize,
-                         strategy = Strategy } = State0) ->
+min_cachable_parent_height(#state{max_size   = CacheSize,
+                                  top_height = ParentTop} = State) ->
+    min(target_parent_height(State), ParentTop - CacheSize ).
+
+post_block(Block, #state{max_size = MaxSize,
+                         top_height = TopHeight} = State0) ->
     TargetHeight = target_parent_height(State0),
     BlockHeight = aec_parent_chain_block:height(Block),
-    case Strategy =:= ?FOLLOW_CHILD_TOP andalso BlockHeight > TargetHeight + MaxSize of
-        true ->
-            %% we are syncing and this is a new top block that is too far away
-            %% from the future; we ignore it
-            State0;
+    MaxBlockToRequest = TargetHeight + MaxSize - 1,
+    GCHeight = min_cachable_parent_height(State0),
+    case BlockHeight < GCHeight of
+        true -> State0;
         false ->
-            %% the block received might be the top one or a previous one; we try GCing
-            %% older blocks according to the top block only;
-            %% if the previous block is missing, fetch it (if above the GC height)
-            GCHeight = max(TopHeight - MaxSize, -1),
-            State1 =
-                case BlockHeight > GCHeight of
-                    true ->
-                        case BlockHeight > TopHeight + MaxSize of
-                            true -> 
-                                %% we received a block far from the future, so we have
-                                %% to GC all blocks
-                                insert_block(Block, State0#state{blocks = #{}});
-                            false ->
-                                insert_block(Block, State0)
-                        end;
-                    false -> State0
-                end,
-            TryGCHeight = BlockHeight - MaxSize,
-            State2 =
-                case TryGCHeight >= 0 of
-                    true ->
-                        delete_block(TryGCHeight, State1);
-                    false -> State1
-                end,
-            State3 = State2#state{top_height = max(TopHeight, BlockHeight)},
-            maybe_fetch_previous_block(BlockHeight, State3),
-            maybe_fetch_next_block(BlockHeight, State3),
-            State3
-            
+            case BlockHeight > MaxBlockToRequest of
+                true ->
+                    %% we are syncing and this is a new top block that is too far away
+                    %% from the future; we ignore it;
+                    %% we still keep the knowledge of seeing this block
+                    State = State0#state{top_height = max(TopHeight, BlockHeight)},
+                    MaxBlock =
+                        case max_block(State) of
+                            empty_cache -> TargetHeight;
+                            H -> H
+                        end,
+                    maybe_request_next_block(MaxBlock, State),
+                    State;
+                false ->
+                    %% the block received might be the top one or a previous one; we try GCing
+                    %% older blocks according to the top block only;
+                    %% if the previous block is missing, fetch it (if above the GC height)
+                    State1 =
+                        case BlockHeight > GCHeight of
+                            true ->
+                                insert_block(Block, State0);
+                            false -> State0
+                        end,
+                    TryGCHeight = BlockHeight - MaxSize,
+                    State2 =
+                        case TryGCHeight >= 0 of
+                            true ->
+                                delete_block(TryGCHeight, State1);
+                            false -> State1
+                        end,
+                    State3 = State2#state{top_height = max(TopHeight, BlockHeight)},
+                    maybe_request_previous_block(BlockHeight, State3),
+                    maybe_request_next_block(BlockHeight, State3),
+                    State3
+            end
     end.
 
-maybe_fetch_previous_block(BlockHeight, #state{ strategy = _AnyStrategy,
-                                                top_height = TopHeight,
-                                                max_size = MaxSize
-                                          } = State) ->
-    GCHeight = max(TopHeight - MaxSize, - 1),
+maybe_request_previous_block(BlockHeight, #state{} = State) ->
     PrevHeight = BlockHeight - 1,
-    case PrevHeight > GCHeight of
+    case PrevHeight >= min_cachable_parent_height(State) of
         true ->
             %% check if the previous block is missing
             case get_block(PrevHeight, State) of
@@ -284,15 +278,13 @@ maybe_fetch_previous_block(BlockHeight, #state{ strategy = _AnyStrategy,
             pass
     end.
 
-maybe_fetch_next_block(BlockHeight, #state{strategy = ?FOLLOW_PC_TOP} = State) ->
+maybe_request_next_block(BlockHeight, #state{top_height = TopHeight}) when BlockHeight >= TopHeight ->
     pass;
-maybe_fetch_next_block(BlockHeight,
-                       #state{strategy = ?FOLLOW_CHILD_TOP,
-                              max_size = MaxSize } = State) ->
+maybe_request_next_block(BlockHeight, #state{max_size = MaxSize } = State) ->
     TargetHeight = target_parent_height(State),
     MaxBlockToRequest = TargetHeight + MaxSize,
     NextHeight = BlockHeight + 1,
-    case MaxBlockToRequest > BlockHeight andalso NextHeight < MaxBlockToRequest of
+    case MaxBlockToRequest > BlockHeight andalso NextHeight =< MaxBlockToRequest of
         true ->
             case get_block(NextHeight, State) of
                 {ok, _} -> pass;

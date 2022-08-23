@@ -25,6 +25,7 @@
 -export([%% async getting of blocks
          request_block_by_hash/1,
          request_block_by_height/1,
+         request_top/0,
          %% blocking getting of blocks
          fetch_block_by_hash/1,
          fetch_block_by_height/1]).
@@ -82,6 +83,9 @@ request_block_by_hash(Hash) ->
 
 request_block_by_height(Height) ->
     gen_server:cast(?SERVER, {request_block_by_height, Height}).
+
+request_top() ->
+    ?SERVER ! check_parent.
 
 %% this blocks the caller process, use with caution
 fetch_block_by_hash(Hash) ->
