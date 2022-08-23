@@ -29,7 +29,7 @@
 %%%=============================================================================
 
 %% External API
--export([start_link/2, stop/0]).
+-export([start_link/3, stop/0]).
 
 %% Callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -61,10 +61,10 @@
 %%% API
 %%%=============================================================================
 %% Start the parent chain cache process
--spec start_link(non_neg_integer(), non_neg_integer()) ->
+-spec start_link(non_neg_integer(), non_neg_integer(), non_neg_integer()) ->
     {ok, pid()} | {error, {already_started, pid()}} | {error, Reason::any()}.
-start_link(Height, Size) ->
-    Args = [Height, Size],
+start_link(Height, Size, Confirmations) ->
+    Args = [Height, Size, Confirmations],
     gen_server:start_link({local, ?SERVER}, ?MODULE, Args, []).
 
 stop() ->
@@ -90,14 +90,14 @@ get_state() ->
 %%%=============================================================================
 
 -spec init([any()]) -> {ok, #state{}}.
-init([StartHeight, Size]) ->
+init([StartHeight, Size, Confirmations]) ->
     aec_events:subscribe(top_changed),
     ChildHeight = aec_chain:top_height(),
     true = is_integer(ChildHeight),
     self() ! initialize_cache,
     {ok, #state{child_start_height  = StartHeight,
                 child_top_height    = ChildHeight,
-                pc_confirmations    = 1, %% TODO: make this configurable
+                pc_confirmations    = Confirmations, 
                 max_size            = Size,
                 blocks              = #{}}}.
 

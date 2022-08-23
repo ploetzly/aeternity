@@ -31,7 +31,8 @@ follow_child_chain_strategy_test_() ->
      [  {"Cache all the blocks above current child height", fun cache_all_above_child_height/0},
         {"Post cachable parent top", fun post_cachable_parent_top/0},
         {"Post non cachable parent top", fun post_non_cachable_parent_top/0},
-        {"Post child top in the middle of caching heights", fun post_child_top_in_the_middle_of_cachable_heights/0}
+        {"Post child top in the middle of caching heights", fun post_child_top_in_the_middle_of_cachable_heights/0},
+        {"Configurable confirmation height", fun configurable_confirmation_height/0}
      ]}.
 
 %%%===================================================================
@@ -42,7 +43,7 @@ cache_all_above_child_height() ->
     Test =
         fun(CacheMaxSize, StartHeight, ChildTop0) ->
             meck:expect(aec_chain, top_height, fun() -> ChildTop0 end),
-            {ok, _CachePid} = start_cache(StartHeight, CacheMaxSize),
+            {ok, _CachePid} = start_cache(StartHeight, CacheMaxSize, _Confirmations = 1),
             timer:sleep(10),
             %% the cache is waiting for a new top, the cache is up to the target top
             ExpectedTopHeight = ChildTop0 + StartHeight,
@@ -65,7 +66,7 @@ post_cachable_parent_top() ->
     Test =
         fun(CacheMaxSize, StartHeight, ChildTop0) ->
             meck:expect(aec_chain, top_height, fun() -> ChildTop0 end),
-            {ok, _CachePid} = start_cache(StartHeight, CacheMaxSize),
+            {ok, _CachePid} = start_cache(StartHeight, CacheMaxSize, _Confirmations = 1),
             timer:sleep(10),
             %% the cache is waiting for a new top, the cache is up to the target top
             ExpectedTopHeight =  ChildTop0 + StartHeight,
@@ -92,7 +93,7 @@ post_non_cachable_parent_top() ->
     Test =
         fun(CacheMaxSize, StartHeight, ChildTop0) ->
             meck:expect(aec_chain, top_height, fun() -> ChildTop0 end),
-            {ok, _CachePid} = start_cache(StartHeight, CacheMaxSize),
+            {ok, _CachePid} = start_cache(StartHeight, CacheMaxSize, _Confirmations = 1),
             timer:sleep(10),
             %% the cache is waiting for a new top, the cache is up to the target top
             ExpectedTopHeight =  ChildTop0 + StartHeight,
@@ -119,7 +120,7 @@ post_child_top_in_the_middle_of_cachable_heights() ->
     Test =
         fun(CacheMaxSize, StartHeight, ChildTop0) ->
             meck:expect(aec_chain, top_height, fun() -> ChildTop0 end),
-            {ok, CachePid} = start_cache(StartHeight, CacheMaxSize),
+            {ok, CachePid} = start_cache(StartHeight, CacheMaxSize, _Confirmations = 1),
             timer:sleep(10),
             %% the cache is waiting for a new top, the cache is up to the target top
             ExpectedTopHeight =  ChildTop0 + StartHeight,
@@ -148,12 +149,36 @@ post_child_top_in_the_middle_of_cachable_heights() ->
     Test(20, 200, 50),
     ok.
 
+
+configurable_confirmation_height() ->
+    Test =
+        fun(CacheMaxSize, StartHeight, ChildTop0, Confirmations) ->
+            meck:expect(aec_chain, top_height, fun() -> ChildTop0 end),
+            {ok, _CachePid} = start_cache(StartHeight, CacheMaxSize, Confirmations),
+            timer:sleep(10),
+            %% the cache is waiting for a new top, the cache is up to the target top
+            ExpectedTopHeight = ChildTop0 + StartHeight,
+            {ok, #{ child_start_height := StartHeight,
+                    top_height         := ExpectedTopHeight,
+                    child_top_height   := ChildTop0} = Res} = ?TEST_MODULE:get_state(),
+            assert_child_cache_consistency(Res),
+            {error, not_in_cache} = ?TEST_MODULE:get_block_by_height(ChildTop0
+                                                                     +
+                                                                     StartHeight
+                                                                     - CacheMaxSize - 1),
+            {error, not_in_cache} = ?TEST_MODULE:get_block_by_height(ExpectedTopHeight + 1),
+            ?TEST_MODULE:stop()
+        end,
+    Test(20, 200, 0, 1),
+    Test(20, 200, 0, 10),
+    ok.
+
 %%%===================================================================
 %%% Helper functions 
 %%%===================================================================
 
-start_cache(StartHeight, MaxSize) ->
-    Args = [StartHeight, MaxSize],
+start_cache(StartHeight, MaxSize, Confirmations) ->
+    Args = [StartHeight, MaxSize, Confirmations],
     gen_server:start({local, ?TEST_MODULE}, ?TEST_MODULE, Args, []).
 
 height_to_hash(Height) when Height < 0 -> height_to_hash(0); 

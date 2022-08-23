@@ -123,7 +123,7 @@ start(Config) ->
             Nodes0),
     CacheSize = 2000, %% TODO: make it configurable
     aec_parent_connector:start_link(ParentConnMod, FetchInterval, ParentHosts),
-    aec_parent_chain_cache:start_link(StartHeight, CacheSize),
+    aec_parent_chain_cache:start_link(StartHeight, CacheSize, Confirmations),
     ok.
 
 stop() -> ok.
