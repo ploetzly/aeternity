@@ -46,12 +46,15 @@ cache_all_above_child_height() ->
             timer:sleep(10),
             %% the cache is waiting for a new top, the cache is up to the target top
             ExpectedTopHeight = ChildTop0 + StartHeight,
-            MaxCachableHeight =
-                fun(CurrentChildTop) -> CurrentChildTop + StartHeight + CacheMaxSize end,
             {ok, #{ child_start_height := StartHeight,
                     top_height         := ExpectedTopHeight,
                     child_top_height   := ChildTop0} = Res} = ?TEST_MODULE:get_state(),
             assert_child_cache_consistency(Res),
+            {error, not_in_cache} = ?TEST_MODULE:get_block_by_height(ChildTop0
+                                                                     +
+                                                                     StartHeight
+                                                                     - CacheMaxSize - 1),
+            {error, not_in_cache} = ?TEST_MODULE:get_block_by_height(ExpectedTopHeight + 1),
             ?TEST_MODULE:stop()
         end,
     Test(20, 200, 0),
@@ -62,7 +65,7 @@ post_cachable_parent_top() ->
     Test =
         fun(CacheMaxSize, StartHeight, ChildTop0) ->
             meck:expect(aec_chain, top_height, fun() -> ChildTop0 end),
-            {ok, CachePid} = start_cache(StartHeight, CacheMaxSize),
+            {ok, _CachePid} = start_cache(StartHeight, CacheMaxSize),
             timer:sleep(10),
             %% the cache is waiting for a new top, the cache is up to the target top
             ExpectedTopHeight =  ChildTop0 + StartHeight,
@@ -89,7 +92,7 @@ post_non_cachable_parent_top() ->
     Test =
         fun(CacheMaxSize, StartHeight, ChildTop0) ->
             meck:expect(aec_chain, top_height, fun() -> ChildTop0 end),
-            {ok, CachePid} = start_cache(StartHeight, CacheMaxSize),
+            {ok, _CachePid} = start_cache(StartHeight, CacheMaxSize),
             timer:sleep(10),
             %% the cache is waiting for a new top, the cache is up to the target top
             ExpectedTopHeight =  ChildTop0 + StartHeight,
@@ -214,6 +217,7 @@ assert_child_cache_consistency(#{ child_start_height := StartHeight,
                                   child_top_height   := ChildTop,
                                   blocks             := Blocks,
                                   max_size           := CacheMaxSize,
+                                  pc_confirmations   := Confirmations,
                                   top_height         := TopHeight}) ->
     ?assertEqual(CacheMaxSize, map_size(Blocks)),
     CacheExpectedStart = min(ChildTop + StartHeight, TopHeight - CacheMaxSize + 1),
@@ -221,6 +225,15 @@ assert_child_cache_consistency(#{ child_start_height := StartHeight,
     CacheExpectedEnd = CacheExpectedStart + CacheMaxSize - 1,
     ?assertEqual(CacheExpectedEnd, lists:max(maps:keys(Blocks))),
     lists:foreach(
-        fun(Height) -> {true, Height} = {maps:is_key(Height, Blocks), Height} end,
+        fun(Height) ->
+            {true, Height} = {maps:is_key(Height, Blocks), Height},
+            IsMature = TopHeight - Confirmations >= Height,
+            Block = block_by_height(Height),
+            case ?TEST_MODULE:get_block_by_height(Height) of
+                {ok, Block} when IsMature -> ok;
+                {error, {not_enough_confirmations, Block}} -> ok
+            end,
+            ok
+        end,
         lists:seq(CacheExpectedEnd, CacheExpectedEnd)),
     ok.
