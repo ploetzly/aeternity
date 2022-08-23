@@ -292,7 +292,6 @@ generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := Ex
             case SignModule:set_candidate(Leader) of
                 {error, key_not_found} ->
                     timer:sleep(1000),
-                    lager:info("ASDF!!!! NOT LEADER", []),
                     {continue_mining, {error, no_solution} };
                 ok ->
                     Candidate1 = aec_headers:set_beneficiary(Candidate, Leader),
@@ -307,7 +306,6 @@ generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := Ex
             end;
         {error, _} ->
             timer:sleep(1000),
-            lager:info("ASDF!!!!", []),
             {continue_mining, {error, no_solution} }
     end.
 
@@ -540,8 +538,6 @@ next_beneficiary() ->
             end;
         {error, _} ->
             timer:sleep(1000),
-            lager:info("ASDF next beneficiary, for Height ~p, not in Cache ~p",
-                       [Height, PCHeight]),
             {error, not_in_cache}
     end.
 
