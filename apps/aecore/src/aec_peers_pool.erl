@@ -465,55 +465,62 @@ count(St, standby, unverified) ->
     #?ST{standby = Standby} = St,
     length([I || I <- maps:keys(Standby), is_unverified(St, I)]).
 
-%% @doc Returns the immutable peer  data for given peer identifier.
+
 -spec find(state(), peer_id()) -> {ok, aec_peer:peer()} | error.
-find(St, PeerId) ->
-    case find_peer(St, PeerId) of
-        #peer{immutable = PeerData} -> {ok, PeerData};
-        undefined -> error
+%% @doc Returns the immutable peer  data for given peer identifier.
+
+find(#?ST{peers = Peers}, PeerID) ->
+    case maps:find(PeerID, Peers) of
+        {ok, #peer{immutable = PeerData}} -> {ok, PeerData};
+        error                             -> error
     end.
 
-%% @doc Returns where a peer identifier is pooled and if it is available.
+
 -spec peer_state(state(), peer_id())
+%% @doc Returns where a peer identifier is pooled and if it is available.
     -> {verified | unverified | undefined, boolean() | undefined}.
-peer_state(St, PeerId) ->
-    #?ST{standby = Standby} = St,
-    case find_peer(St, PeerId) of
-        undefined ->
-            {undefined, undefined};
-        Peer ->
-            IsAvailable = not (peer_is_selected(Peer)
-                               or maps:is_key(PeerId, Standby)),
-            {peer_state(Peer), IsAvailable}
+
+peer_state(#?ST{peers = Peers, standby = Standby}, PeerID) ->
+    case maps:find(PeerID, Peers) of
+        {ok, Peer = #peer{selected = IsSelected}} ->
+            Available = not (IsSelected or maps:is_key(PeerID, Standby)),
+            {peer_state(Peer), Available};
+        error ->
+            {undefined, undefined}
     end.
 
+-spec is_verified(state(), peer_id()) -> undefined | boolean().
 %% @doc Returns if the given peer identifier is pooled as verified.
 %% If given an unknown identifier it returns `undefined'.
--spec is_verified(state(), peer_id()) -> undefined | boolean().
-is_verified(St, PeerId) ->
-    case find_peer(St, PeerId) of
-        undefined -> undefined;
-        Peer -> peer_state(Peer) =:= verified
+
+is_verified(#?ST{peers = Peers}, PeerID) ->
+    case maps:find(PeerID, Peers) of
+        {ok, Peer} -> peer_state(Peer) =:= verified;
+        error      -> undefined
     end.
+
 
 %% @doc Returns if the given peer identifier is pooled as unverified.
 %% If given an unknown identifier it returns `undefined'.
 -spec is_unverified(state(), peer_id()) -> undefined | boolean().
-is_unverified(St, PeerId) ->
-    case find_peer(St, PeerId) of
-        undefined -> undefined;
-        Peer -> peer_state(Peer) =:= unverified
+is_unverified(#?ST{peers = Peers}, PeerID) ->
+    case maps:find(PeerID, Peers) of
+        {ok, Peer} -> peer_state(Peer) =:= unverified;
+        error      -> undefined
     end.
 
+-spec is_available(state(), peer_id()) -> undefined | boolean().
 %% @doc Returns if the given peer identifier is available for selection.
 %% If given an unknown identifier it returns `undefined'.
--spec is_available(state(), peer_id()) -> undefined | boolean().
-is_available(St, PeerId) ->
-    #?ST{standby = Standby} = St,
-    case find_peer(St, PeerId) of
-        undefined -> undefined;
-        Peer -> not (peer_is_selected(Peer) or maps:is_key(PeerId, Standby))
+
+is_available(#?ST{peers = Peers, standby = Standby}, PeerID) ->
+    case maps:find(PeerID, Peers) of
+        {ok, #peer{selected = IsSelected}} ->
+            not (IsSelected or maps:is_key(PeerID, Standby));
+        error ->
+            undefined
     end.
+
 
 %% @doc Updates/inserts a peer.
 %%
@@ -771,49 +778,38 @@ address_descriptor({A, B, C, D}) -> <<A:8, B:8, C:8, D:8>>.
 
 -ifdef(TEST).
 
-reference_count(St, PeerId) ->
-    #peer{uidxs = Idxs} = get_peer(St, PeerId),
+reference_count(#?ST{peers = Peers}, PeerID) ->
+    #peer{uidxs = Idxs} = maps:get(PeerID, Peers),
     length(Idxs).
 
 -endif.
 
-%% Returns a peer record if it exists, `undefined' otherwise.
--spec find_peer(state(), peer_id()) -> undefined | peer().
-find_peer(St, PeerId) ->
-    #?ST{peers = Peers} = St,
-    case maps:find(PeerId, Peers) of
-        {ok, Peer} -> Peer;
-        error      -> undefined
-    end.
 
-%% Gets a peer record by peer identifier; fails if the id doesn't exists.
 -spec get_peer(state(), peer_id()) -> peer().
+%% Gets a peer record by peer identifier; fails if the id doesn't exists.
+
 get_peer(St, PeerId) ->
     #?ST{peers = Peers} = St,
     maps:get(PeerId, Peers).
 
-%% Sets a peer record by peer identifier; fails if the id doesn't exists.
+
 -spec set_peer(state(), peer_id(), peer()) -> state().
+%% Sets a peer record by peer identifier; fails if the id doesn't exists.
+
 set_peer(St, PeerId, Peer) ->
     #?ST{peers = Peers} = St,
     Peers2 = Peers#{PeerId := Peer},
     St#?ST{peers = Peers2}.
 
-%% Updates or adds a peer; only the source address can be updated.
+
 -spec update_peer(state(), millitimestamp(), aec_peer:peer())
     -> ignored | {updated, state()}.
-update_peer(St, Now, PeerData) ->
-    PeerId = aec_peer:id(PeerData),
-    case find_peer(St, PeerId) of
-        undefined ->
-            #?ST{peers = Peers} = St,
-            Peer = peer_new(PeerData),
-            Peer2 = Peer#peer{update_time = Now},
-            PeerId = aec_peer:id(PeerData),
-            Peers2 = Peers#{PeerId => Peer2},
-            db_persist_peer(PeerData),
-            {updated, St#?ST{peers = Peers2}};
-        #peer{immutable = CurrPeerData} = CurrPeer ->
+%% Updates or adds a peer; only the source address can be updated.
+
+update_peer(St = #?ST{peers = Peers}, Now, PeerData) ->
+    PeerID = aec_peer:id(PeerData),
+    case maps:find(PeerID, Peers) of
+        {ok, CurrPeer = #peer{immutable = CurrPeerData}} ->
             PeerAddr = aec_peer:ip(PeerData),
             CurrPeerAddr = aec_peer:ip(CurrPeerData),
             IsTrusted = aec_peer:is_trusted(PeerData),
@@ -825,24 +821,32 @@ update_peer(St, Now, PeerData) ->
                     Peer2 = CurrPeer#peer{update_time = Now,
                                           %% update source
                                           immutable = PeerData1},
-                    db_persist_peer(PeerData1),
-                    {updated, set_peer(St, PeerId, Peer2)};
+                    ok = db_persist_peer(PeerData1),
+                    NewPeers = maps:put(PeerID, Peer2, Peers),
+                    {updated, St#?ST{peers = NewPeers}};
                 false ->
                     ignored
-            end
+            end;
+        error ->
+            New = peer_new(PeerData),
+            UpdatedPeer = New#peer{update_time = Now},
+            NewPeers = maps:put(PeerID, UpdatedPeer, Peers),
+            ok = db_persist_peer(PeerData),
+            {updated, St#?ST{peers = NewPeers}}
     end.
 
-%% Deletes a peer and all its references.
 -spec del_peer(state(), peer_id()) -> state().
-del_peer(St, PeerId) ->
-    St2 = standby_del(St, PeerId),
-    St3 = verified_del(St2, PeerId),
-    St4 = unverified_del(St3, PeerId),
+%% Deletes a peer and all its references.
+
+del_peer(St = #?ST{peers = Peers}, PeerID) ->
+    St2 = standby_del(St, PeerID),
+    St3 = verified_del(St2, PeerID),
+    St4 = unverified_del(St3, PeerID),
     Puzzling =
         fun({LookupRecField, PeerRecField}, S) ->
             #?ST{peers = Peers} = S,
             Lookup = element(LookupRecField, S),
-            {Lookup2, Peers2} = peers_lookup_del(Peers, PeerId, Lookup, PeerRecField),
+            {Lookup2, Peers2} = peers_lookup_del(Peers, PeerID, Lookup, PeerRecField),
             S2 = setelement(LookupRecField, S, Lookup2),
             S2#?ST{peers = Peers2}
         end,
@@ -850,13 +854,13 @@ del_peer(St, PeerId) ->
         [{#?ST.lookup_verif_all, #peer.lookup_verif_all_idx},
          {#?ST.lookup_verif, #peer.lookup_verif_idx},
          {#?ST.lookup_unver, #peer.lookup_unver_idx}],
-    St5 = lists:foldl(Puzzling, St4, Nonsense),
-    #?ST{peers = Peers} = St5,
+    St5 = #?ST{peers = UpdatedPeers} = lists:foldl(Puzzling, St4, Nonsense),
     %% this asserts the peer is present
-    Peer = get_peer(St, PeerId),
-    db_delete_peer(Peer#peer.immutable),
-    ?assertEqual(false, (maps:get(PeerId, Peers))#peer.selected),
-    St5#?ST{peers = maps:remove(PeerId, Peers)}.
+    #peer{immutable = PeerData} = get_peer(PeerID, Peers),
+    ok = db_delete_peer(PeerData),
+    ?assertEqual(false, (maps:get(PeerID, UpdatedPeers))#peer.selected),
+    St5#?ST{peers = maps:remove(PeerID, UpdatedPeers)}.
+
 
 %% Returns the order in which pools should be used to select a peer.
 -spec select_order(state(), select_target()) -> {[select_fun()], state()}.
@@ -929,55 +933,61 @@ select_standby_peer(St, Now, Target, FilterFun) ->
         Exp -> {wait, Exp - Now, St}
     end.
 
-% Makes a peer unavailable.
--spec make_selected(state(), millitimestamp(), peer_id()) -> state().
-make_selected(St, Now, PeerId) ->
-    Peer = get_peer(St, PeerId),
-    ?assertEqual(false, Peer#peer.selected),
-    Peer2 = peer_select(Peer, Now),
-    St2 = set_peer(St, PeerId, Peer2),
-    St3 = standby_del(St2, PeerId),
-    make_unavailable(St3, PeerId).
 
-%% Rejects a selected peer.
+-spec make_selected(state(), millitimestamp(), peer_id()) -> state().
+% Makes a peer unavailable.
+
+make_selected(St = #?ST{peers = Peers}, Now, PeerID) ->
+    Peer = #peer{selected = false} = maps:get(PeerID, Peers),
+    Selected = peer_select(Peer, Now),
+    NewPeers = maps:put(PeerID, Selected, Peers),
+    NewState = standby_del(St#?ST{peers = NewPeers}, PeerID),
+    make_unavailable(NewState, PeerID).
+
+
 -spec reject_peer(state(), millitimestamp(), peer_id()) -> state().
-reject_peer(St, Now, PeerId) ->
-    case find_peer(St, PeerId) of
-        #peer{selected = true} = Peer ->
+%% Rejects a selected peer.
+
+reject_peer(St = #?ST{peers = Peers}, Now, PeerID) ->
+    case maps:find(PeerID, Peers) of
+        {ok, Peer = #peer{selected = true}} ->
             #?ST{max_rejections = MaxRejections} = St,
-            St2 = make_unavailable(St, PeerId),
-            Peer = get_peer(St2, PeerId),
+            St2 = #?ST{peers = NextPeers} = make_unavailable(St, PeerID),
+            Peer = maps:get(PeerID, Peers),
             Peer2 = peer_reject(Peer, Now),
             Peer3 = peer_deselect(Peer2, Now),
-            St3 = set_peer(St2, PeerId, Peer3),
+            St3 = St2#?ST{peers = maps:put(PeerID, Peer3, NextPeers)},
             case peer_state(Peer3) of
                 verified ->
                     %% verified is downgraded on first notice
-                    verified_downgrade(St3, Now, PeerId);
+                    verified_downgrade(St3, Now, PeerID);
                 unverified ->
                     case peer_has_expired(Peer3, MaxRejections) of
                         true ->
-                            del_peer(St3, PeerId);
+                            del_peer(St3, PeerID);
                         false ->
-                            standby_add(St3, PeerId)
+                            standby_add(St3, PeerID)
                     end
             end;
         _ ->
             St
     end.
 
-%% Releases a selected peer.
+
 -spec release_peer(state(), millitimestamp(), peer_id()) -> state().
-release_peer(St, Now, PeerId) ->
-    case find_peer(St, PeerId) of
-        #peer{selected = true} = Peer ->
-            Peer2 = peer_reset(Peer, Now),
-            Peer3 = peer_deselect(Peer2, Now),
-            St2 = set_peer(St, PeerId, Peer3),
-            make_available(St2, PeerId);
+%% Releases a selected peer.
+
+release_peer(St = #?ST{peers = Peers}, Now, PeerID) ->
+    case maps:find(PeerID, Peers) of
+        {ok, Peer = #peer{selected = true}} ->
+            Reset = peer_reset(Peer, Now),
+            Deselected = peer_deselect(Reset, Now),
+            NewPeers = maps:put(PeerID, Deselected, Peers),
+            make_available(St#?ST{peers = NewPeers}, PeerID);
         _ ->
             St
     end.
+
 
 %% Puts a peer on standby.
 -spec standby_add(state(), peer_id()) -> state().
@@ -986,16 +996,17 @@ standby_add(St, PeerId) ->
     Standby2 = Standby#{PeerId => true},
     St#?ST{standby = Standby2}.
 
-%% removed a peer from standby.
 -spec standby_del(state(), peer_id()) -> state().
-standby_del(St, PeerId) ->
-    #?ST{standby = Standby} = St,
-    Standby2 = maps:remove(PeerId, Standby),
-    St#?ST{standby = Standby2}.
+%% removed a peer from standby.
 
+standby_del(St = #?ST{standby = Standby}, PeerID) ->
+    St#?ST{standby = maps:remove(PeerID, Standby)}.
+
+
+-spec standby_refresh(state(), millitimestamp()) -> state().
 %% Checks peers on standby and make them available again if they exhausted
 %% there standby time.
--spec standby_refresh(state(), millitimestamp()) -> state().
+
 standby_refresh(St0, Now) ->
     #?ST{standby = Standby, standby_times = StandbyTimes} = St0,
     lists:foldl(fun(PeerId, St) ->
@@ -1009,90 +1020,112 @@ standby_refresh(St0, Now) ->
         end
     end, St0, maps:keys(Standby)).
 
-%% Make a peer unavailable for selection.
+
 -spec make_available(state(), peer_id()) -> state().
-make_available(St, PeerId) ->
-    Peer = get_peer(St, PeerId),
+%% Make a peer unavailable for selection.
+
+make_available(St = #?ST{peers = Peers}, PeerID) ->
+    Peer = maps:get(PeerID, Peers),
     case {peer_state(Peer), Peer} of
         {verified, #peer{lookup_verif_idx = undefined}} ->
-            add_lookup_verif(St, PeerId);
+            add_lookup_verif(St, PeerID);
         {unverified, #peer{lookup_unver_idx = undefined}} ->
-            add_lookup_unver(St, PeerId);
+            add_lookup_unver(St, PeerID);
         _ -> St
     end.
 
-%% Make a peer unavailable for selection.
 -spec make_unavailable(state(), peer_id()) -> state().
-make_unavailable(St, PeerId) ->
-    Peer = get_peer(St, PeerId),
+%% Make a peer unavailable for selection.
+
+make_unavailable(St, PeerID) ->
+    Peer = get_peer(St, PeerID),
     case {peer_state(Peer), Peer} of
         {verified, #peer{lookup_verif_idx = Idx}} when Idx =/= undefined ->
-            del_lookup_verif(St, PeerId);
+            del_lookup_verif(St, PeerID);
         {unverified, #peer{lookup_unver_idx = Idx}} when Idx =/= undefined ->
-            del_lookup_unver(St, PeerId);
+            del_lookup_unver(St, PeerID);
         _ -> St
     end.
 
+
 -spec add_lookup_verif_all(state(), peer_id()) -> state().
+
 add_lookup_verif_all(St, PeerId) ->
     #?ST{peers = Peers, rand = Rand, lookup_verif_all = Lookup} = St,
     {Lookup2, Rand2, Peers2} =
         peers_lookup_add(Peers, Rand, PeerId, Lookup, #peer.lookup_verif_all_idx),
     St#?ST{peers = Peers2, rand = Rand2, lookup_verif_all = Lookup2}.
 
+
 -spec add_lookup_verif(state(), peer_id()) -> state().
+
 add_lookup_verif(St, PeerId) ->
     #?ST{peers = Peers, rand = Rand, lookup_verif = Lookup} = St,
     {Lookup2, Rand2, Peers2} =
         peers_lookup_add(Peers, Rand, PeerId, Lookup, #peer.lookup_verif_idx),
     St#?ST{peers = Peers2, rand = Rand2, lookup_verif = Lookup2}.
 
+
 -spec add_lookup_unver(state(), peer_id()) -> state().
+
 add_lookup_unver(St, PeerId) ->
     #?ST{peers = Peers, rand = Rand, lookup_unver = Lookup} = St,
     {Lookup2, Rand2, Peers2} =
         peers_lookup_add(Peers, Rand, PeerId, Lookup, #peer.lookup_unver_idx),
     St#?ST{peers = Peers2, rand = Rand2, lookup_unver = Lookup2}.
 
+
 -spec del_lookup_verif_all(state(), peer_id()) -> state().
+
 del_lookup_verif_all(St, PeerId) ->
     #?ST{peers = Peers, lookup_verif_all = Lookup} = St,
     {Lookup2, Peers2} =
         peers_lookup_del(Peers, PeerId, Lookup, #peer.lookup_verif_all_idx),
     St#?ST{peers = Peers2, lookup_verif_all = Lookup2}.
 
+
 -spec del_lookup_verif(state(), peer_id()) -> state().
+
 del_lookup_verif(St, PeerId) ->
     #?ST{peers = Peers, lookup_verif = Lookup} = St,
     {Lookup2, Peers2} =
         peers_lookup_del(Peers, PeerId, Lookup, #peer.lookup_verif_idx),
     St#?ST{peers = Peers2, lookup_verif = Lookup2}.
 
+
 -spec del_lookup_unver(state(), peer_id()) -> state().
+
 del_lookup_unver(St, PeerId) ->
     #?ST{peers = Peers, lookup_unver = Lookup} = St,
     {Lookup2, Peers2} =
         peers_lookup_del(Peers, PeerId, Lookup, #peer.lookup_unver_idx),
     St#?ST{peers = Peers2, lookup_unver = Lookup2}.
 
-%% Exports a list of peer identifier to the external format.
+
 -spec export_results(state(), [peer_id()]) -> [ext_peer()].
+%% Exports a list of peer identifier to the external format.
+
 export_results(St, PeerIds) ->
     lists:foldl(fun(PeerId, Acc) ->
         [export_result(St, PeerId) | Acc]
     end, [], PeerIds).
 
-%% Exports a peer identifier to the external format.
+
 -spec export_result(state(), peer_id()) -> ext_peer().
+%% Exports a peer identifier to the external format.
+
 export_result(St, PeerId) ->
     #peer{immutable = PeerData} = get_peer(St, PeerId),
     {PeerId, PeerData}.
 
-%% Wraps a filtering function to only require the peer identifier.
-%% The result should not be used if the list of peers is mutated.
+
 -spec wrap_filter_fun(state(), filter_fun() | undefined)
     -> int_filter_fun() | undefined.
-wrap_filter_fun(_St, undefined) -> undefined;
+%% Wraps a filtering function to only require the peer identifier.
+%% The result should not be used if the list of peers is mutated.
+
+wrap_filter_fun(_St, undefined) ->
+    undefined;
 wrap_filter_fun(St, FilterFun) ->
     #?ST{peers = Peers} = St,
     fun(PeerId) ->
@@ -1100,13 +1133,15 @@ wrap_filter_fun(St, FilterFun) ->
         FilterFun(PeerId, Peer#peer.immutable)
     end.
 
+
 %--- FUNCTIONS FOR BOTH VERIFIED AND UNVERIFIED POOLS --------------------------
 
-%% Creates a generic bucket filtering function that always keeps selected and
-%% trusted peers, removes out dated peers and elect the rest for eviction.
 -spec make_bucket_filtering_fun(state(), millitimestamp(),
                                 peer_id() | undefined)
     -> bucket_filter_fun().
+%% Creates a generic bucket filtering function that always keeps selected and
+%% trusted peers, removes out dated peers and elect the rest for eviction.
+
 make_bucket_filtering_fun(St, Now, KeepPeerId) ->
     #?ST{peers = Peers, max_update_lapse = MaxLapse} = St,
     fun
@@ -1122,12 +1157,14 @@ make_bucket_filtering_fun(St, Now, KeepPeerId) ->
             end
     end.
 
+
 %--- VERIFIED POOL HANDLING FUNCTIONS ------------------------------------------
 
+-spec verified_bucket_index(state(), peer_addr()) -> non_neg_integer().
 %% Returns the verified pool bucket index for given address.
 %% For the same peer address group, it will return at most `verif_group_shard'
 %% different indexes.
--spec verified_bucket_index(state(), peer_addr()) -> non_neg_integer().
+
 verified_bucket_index(St, PeerAddr) ->
     #?ST{
         secret = Secret,
@@ -1140,9 +1177,11 @@ verified_bucket_index(St, PeerAddr) ->
     GroupSlot = hash_modulo(<<Secret/binary, PeerDesc/binary>>, GroupShard),
     hash_modulo(<<Secret/binary, PeerGroup/binary, GroupSlot:8>>, BucketCount).
 
-%% Adds a peer to the verified pool if required.
+
 -spec verified_maybe_add(state(), millitimestamp(), peer_id())
     -> {verified, state()} | {unverified, state()} | {ignored, state()}.
+%% Adds a peer to the verified pool if required.
+
 verified_maybe_add(St, Now, PeerId) ->
     Peer = get_peer(St, PeerId),
     case peer_state(Peer) of
@@ -1167,9 +1206,11 @@ verified_maybe_add(St, Now, PeerId) ->
             end
     end.
 
-%% Adds given peer to the verified pool; doesn't check if it is already there.
+
 -spec verified_add(state(), millitimestamp(), peer())
     -> {verified, state()} | {ignored, state()}.
+%% Adds given peer to the verified pool; doesn't check if it is already there.
+
 verified_add(St, Now, Peer) ->
     ?assertEqual(undefined, Peer#peer.vidx),
     #peer{immutable = PeerData} = Peer,
@@ -1198,10 +1239,12 @@ verified_add(St, Now, Peer) ->
             end
     end.
 
+
+-spec verified_del(state(), peer_id()) -> state().
 %% Deletes a peer from the verified pool.
 %% It ONLY deletes the peer from the verified pool and verified lookup
 %% table.
--spec verified_del(state(), peer_id()) -> state().
+
 verified_del(St, PeerId) ->
     case get_peer(St, PeerId) of
         #peer{vidx = undefined} -> St;
@@ -1215,8 +1258,10 @@ verified_del(St, PeerId) ->
             del_lookup_verif_all(St4, PeerId)
     end.
 
-%% Downgrade a verified peer to unverified or delete it completely.
+
 -spec verified_downgrade(state(), millitimestamp(), peer_id()) -> state().
+%% Downgrade a verified peer to unverified or delete it completely.
+
 verified_downgrade(St, Now, PeerId) ->
     Peer = get_peer(St, PeerId),
     Peer2 = peer_reset(Peer, Now),
@@ -1229,12 +1274,13 @@ verified_downgrade(St, Now, PeerId) ->
             del_peer(St4, PeerId)
     end.
 
-%% Tries to free space in a verified pool bucket for given peer.
-%% The peer is required because we don't want it evicted from the unverified
-%% pool by a downgraded peer.
 -spec verified_make_space_for(state(), millitimestamp(),
                               non_neg_integer(), peer_id())
     -> {no_space, state()} | {free_space, state()}.
+%% Tries to free space in a verified pool bucket for given peer.
+%% The peer is required because we don't want it evicted from the unverified
+%% pool by a downgraded peer.
+
 verified_make_space_for(St, Now, BucketIdx, PeerId) ->
     % When evicting we want to skew the random selection in favor of the peers
     % selected the longest time ago, but we never evict selected peers.
@@ -1280,23 +1326,27 @@ verified_make_space_for(St, Now, BucketIdx, PeerId) ->
             {free_space, St3}
     end.
 
-%% Selects a random available peer from the verified pool.
+
 -spec verified_select(state(), millitimestamp(), int_filter_fun() | undefined)
     -> {unavailable, state()} | {peer_id(), state()}.
+%% Selects a random available peer from the verified pool.
+
 verified_select(St, _Now, FilterFun) ->
     #?ST{rand = RState, use_rand_offset = ROffset, lookup_verif = Lookup} = St,
     {Result, RSt2} = lookup_select(Lookup, RState, ROffset, FilterFun),
     {Result, St#?ST{rand = RSt2}}.
 
+
 %--- UNVERIFIED POOL HANDLING FUNCTIONS ----------------------------------------
 
+-spec unverified_bucket_index(state(), peer_addr(), peer_addr())
+    -> non_neg_integer().
 %% Returns the unverified pool bucket index for given source and peer address.
 %% For the same source address group, it will return at most
 %% `verif_source_shard' different indexes.
 %% For the same source and peer address group, it will return at most
 %% `verif_group_shard' different indexes.
--spec unverified_bucket_index(state(), peer_addr(), peer_addr())
-    -> non_neg_integer().
+
 unverified_bucket_index(St, SourceAddr, PeerAddr) ->
     #?ST{
         secret = Secret,
@@ -1313,118 +1363,127 @@ unverified_bucket_index(St, SourceAddr, PeerAddr) ->
     hash_modulo(<<Secret/binary, SourceGroup/binary,
                   SourceSlot:8, GroupSlot:8>>, BucketCount).
 
+
+-spec unverified_maybe_add(state(), millitimestamp(), peer_id(),
+                           peer_id() | undefined)
+    -> {verified, state()} | {unverified, state()} | {ignored, state()}.
 %% Adds a peer to the unverified pool if required.
 %% A peer identifier that MUST NOT be removed can be specified;
 %% this is required when a peer is upgraded while still being kept in
 %% the unverified pool.
--spec unverified_maybe_add(state(), millitimestamp(), peer_id(),
-                           peer_id() | undefined)
-    -> {verified, state()} | {unverified, state()} | {ignored, state()}.
-unverified_maybe_add(St, Now, PeerId, KeepPeerId) ->
-    Peer = get_peer(St, PeerId),
+
+unverified_maybe_add(St = #?ST{peers = Peers}, Now, PeerID, KeepPeerID) ->
+    Peer = maps:get(PeerID, Peers),
     case peer_state(Peer) of
         verified ->
             {verified, St};
         undefined ->
-            unverified_add(St, Now, Peer, KeepPeerId);
+            unverified_add(St, Now, Peer, KeepPeerID);
         unverified  ->
-            #?ST{rand = RSt, unver_pool = Pool} = St,
-            #peer{uidxs = Idxs} = Peer,
-            case pool_should_add_ref(Pool, RSt, Idxs) of
-                {false, RSt2} ->
-                    {unverified, St#?ST{rand = RSt2}};
-                {true, RSt2} ->
-                    St2 = St#?ST{rand = RSt2},
-                    St3 = unverified_add_reference(St2, Now, Peer, KeepPeerId),
-                    {unverified, St3}
-            end
+            unverified_maybe_add2(St, Peer, Now, KeepPeerID)
     end.
 
-%% Adds a peer to the unverified pool without any check.
+unverified_maybe_add2(St = #?ST{rand = RSt, unver_pool = Pool},
+                      Peer = #peer{uidxs = Idxs},
+                      Now, KeepPeerID) ->
+    case pool_should_add_ref(Pool, RSt, Idxs) of
+        {false, RSt2} ->
+            {unverified, St#?ST{rand = RSt2}};
+        {true, RSt2} ->
+            St2 = St#?ST{rand = RSt2},
+            St3 = unverified_add_reference(St2, Now, Peer, KeepPeerID),
+            {unverified, St3}
+    end.
+
+
+
 -spec unverified_add(state(), millitimestamp(), peer(), peer_id() | undefined)
     -> {unverified, state()} | {ignored, state()}.
-unverified_add(St, Now, Peer, KeepPeerId) ->
-    #peer{immutable = PeerData} = Peer,
-    PeerId = aec_peer:id(PeerData),
+%% Adds a peer to the unverified pool without any check.
+
+unverified_add(St, Now, Peer = #peer{immutable = PeerData}, KeepPeerID) ->
+    PeerID = aec_peer:id(PeerData),
     SourceAddr = aec_peer:source(PeerData),
     ?assertEqual([], Peer#peer.uidxs),
     PeerAddr = aec_peer:ip(PeerData),
     BucketIdx = unverified_bucket_index(St, SourceAddr, PeerAddr),
-    case unverified_make_space(St, Now, BucketIdx, KeepPeerId) of
-        {no_space, St2} ->
-            {ignored, St2};
-        {free_space, St2} ->
-            #?ST{unver_pool = Pool} = St2,
-            Pool2 = pool_add(Pool, BucketIdx, PeerId),
-            St3 = St2#?ST{unver_pool = Pool2},
-            % Peer may have been changed by unverified_make_space/4.
-            Peer2 = get_peer(St3, PeerId),
-            Peer3 = Peer2#peer{uidxs = [BucketIdx]},
-            St4 = set_peer(St3, PeerId, Peer3),
-            case is_available(St4, PeerId) of
-                true ->
-                    {unverified, add_lookup_unver(St4, PeerId)};
-                false ->
-                    {unverified, St4}
-            end
+    case unverified_make_space(St, Now, BucketIdx, KeepPeerID) of
+        {no_space, St2}   -> {ignored, St2};
+        {free_space, St2} -> unverified_add2(St2, PeerID, BucketIdx)
     end.
 
-%% Adds another reference to a peer already in the unverified pool.
+unverified_add2(St = #?ST{peers = Peers, unver_pool = Pool}, PeerID, BucketIdx) ->
+    NewPool = pool_add(Pool, BucketIdx, PeerID),
+    Peer = maps:get(PeerID, Peers),
+    NewPeer = Peer#peer{uidxs = [BucketIdx]},
+    NewPeers = maps:put(PeerID, NewPeer, Peers),
+    NewState = St#?ST{peers = NewPeers, unver_pool = NewPool},
+    case is_available(NewState, PeerID) of
+        true  -> {unverified, add_lookup_unver(NewState, PeerID)};
+        false -> {unverified, NewState}
+    end.
+
+
 -spec unverified_add_reference(state(), millitimestamp(), peer(),
                                peer_id() | undefined)
     -> state().
-unverified_add_reference(St, Now, Peer, KeepPeerId) ->
-    #peer{
-        uidxs = Idxs,
-        immutable = PeerData
-    } = Peer,
-    PeerId = aec_peer:id(PeerData),
+%% Adds another reference to a peer already in the unverified pool.
+
+unverified_add_reference(St,
+                         Now,
+                         #peer{uidxs     = Idxs,
+                               immutable = PeerData},
+                         KeepPeerID) ->
+    PeerID = aec_peer:id(PeerData),
     PeerAddr = aec_peer:ip(PeerData),
     SourceAddr = aec_peer:source(PeerData),
     ?assertNotEqual([], Idxs),
     BucketIdx = unverified_bucket_index(St, SourceAddr, PeerAddr),
     case lists:member(BucketIdx, Idxs) of
-        true -> St;
-        false ->
-            case unverified_make_space(St, Now, BucketIdx, KeepPeerId) of
-                {no_space, St2} -> St2;
-                {free_space, St2} ->
-                    #?ST{unver_pool = Pool} = St2,
-                    Pool2 = pool_add(Pool, BucketIdx, PeerId),
-                    St3 = St2#?ST{unver_pool = Pool2},
-                    % Peer may have been changed by unverified_make_space/4.
-                    Peer2 = get_peer(St3, PeerId),
-                    Peer3 = Peer2#peer{uidxs = [BucketIdx | Idxs]},
-                    set_peer(St3, PeerId, Peer3)
-            end
+        true  -> St;
+        false -> unverified_add_reference2(St, Now, BucketIdx, PeerID, KeepPeerID)
     end.
 
+unverified_add_reference2(St, Now, BucketIdx, PeerID, KeepPeerID) ->
+    case unverified_make_space(St, Now, BucketIdx, KeepPeerID) of
+        {no_space, NextSt} ->
+            NextSt;
+        {free_space, NextSt = #?ST{peers = Peers, unver_pool = Pool}} ->
+            NewPool = pool_add(Pool, BucketIdx, PeerID),
+            Peer = #peer{uidxs = Idxs} = maps:get(PeerID, Peers),
+            UpdatedPeer = Peer#peer{uidxs = [BucketIdx | Idxs]},
+            NewPeers = maps:put(PeerID, UpdatedPeer, Peers),
+            NextSt#?ST{peers = NewPeers, unver_pool = NewPool}
+    end.
+
+
+-spec unverified_del(state(), peer_id()) -> state().
 %% Deletes all the references to a peer from the unverified pool.
 %% MUST work even when peers are in both pools because peers are first added
 %% to the verified pool and THEN deleted from the unverified pool.
 %% It ONLY deletes the peer from the unverified pool and unverified lookup
 %% table.
--spec unverified_del(state(), peer_id()) -> state().
-unverified_del(St, PeerId) ->
-    case get_peer(St, PeerId) of
-        #peer{uidxs = []} -> St;
+
+unverified_del(St = #?ST{peers = Peers, unver_pool = Pool}, PeerID) ->
+    case maps:get(PeerID, Peers) of
+        #peer{uidxs = []} ->
+            St;
         #peer{uidxs = BucketIdxs} = Peer->
-            #?ST{unver_pool = Pool} = St,
-            Pool2 = lists:foldl(fun(I, P) ->
-                pool_del(P, I, PeerId)
-            end, Pool, BucketIdxs),
-            St2 = St#?ST{unver_pool = Pool2},
-            Peer2 = Peer#peer{uidxs = []},
-            St3 = set_peer(St2, PeerId, Peer2),
-            del_lookup_unver(St3, PeerId)
+            Delete = fun(I, P) -> pool_del(P, I, PeerID) end,
+            CleanedPool = lists:foldl(Delete, Pool, BucketIdxs),
+            NewPeers = maps:put(PeerID, Peer#peer{uidxs = []}, Peers),
+            NextSt = St#?ST{peers = NewPeers, unver_pool = CleanedPool},
+            del_lookup_unver(NextSt, PeerID)
     end.
 
-%% Tries to free space in an unverified pool bucket.
-%% If not `undefined', the specified peer identifier will never be removed
-%% or evicted.
+
 -spec unverified_make_space(state(), millitimestamp(), non_neg_integer(),
                             peer_id() | undefined)
     -> {no_space, state()} | {free_space, state()}.
+%% Tries to free space in an unverified pool bucket.
+%% If not `undefined', the specified peer identifier will never be removed
+%% or evicted.
+
 unverified_make_space(St, Now, BucketIdx, KeepPeerId) ->
     % When evicting we want to skew the random selection in favor of the peers
     % updated the longest time ago, but we never evict selected peers.
@@ -1447,103 +1506,121 @@ unverified_make_space(St, Now, BucketIdx, KeepPeerId) ->
             {free_space, St3}
     end.
 
+
+-spec unverified_ref_deleted(state(), peer_id(), non_neg_integer()) -> state().
 %% Acts on a peer reference being removed from the given unverified pool bucket.
 %% If it is the last reference, the pool size is decremented and the peer is
 %% COMPLETELY removed.
--spec unverified_ref_deleted(state(), peer_id(), non_neg_integer()) -> state().
-unverified_ref_deleted(St, PeerId, BucketIdx) ->
-    case get_peer(St, PeerId) of
-        #peer{uidxs = [BucketIdx]} = Peer ->
+
+unverified_ref_deleted(St = #?ST{peers = Peers}, PeerID, BucketIdx) ->
+    case maps:get(PeerID, Peers) of
+        Peer = #peer{uidxs = [BucketIdx]} ->
             % Last reference is removed
             #?ST{unver_pool = Pool = #pool{size = Size}} = St,
-            Pool2 = Pool#pool{size = Size - 1},
-            Peer2 = Peer#peer{uidxs = []},
-            St2 = St#?ST{unver_pool = Pool2},
-            St3 = set_peer(St2, PeerId, Peer2),
-            del_peer(St3, PeerId);
-        #peer{uidxs = RefIdxs} = Peer ->
+            NewPool = Pool#pool{size = Size - 1},
+            NewPeers = maps:put(PeerID, Peer#peer{uidxs = []}, Peers),
+            NextSt = St#?ST{peers = NewPeers, unver_pool = NewPool},
+            del_peer(NextSt, PeerID);
+        Peer = #peer{uidxs = RefIdxs} ->
             % Peer is still referenced in other buckets
             ?assert(lists:member(BucketIdx, RefIdxs)),
-            RefIdxs2 = lists:delete(BucketIdx, RefIdxs),
-            ?assertNotMatch([], RefIdxs2),
-            Peer2 = Peer#peer{uidxs = RefIdxs2},
-            set_peer(St, PeerId, Peer2)
+            CleanedIdxs = lists:delete(BucketIdx, RefIdxs),
+            ?assertNotMatch([], CleanedIdxs),
+            St#?ST{peers = maps:put(PeerID, Peer#peer{uidxs = CleanedIdxs}, Peers)}
     end.
 
-%% Selects a random available peer from the unverified pool.
+
 -spec unverified_select(state(), millitimestamp(), int_filter_fun())
     -> {unavailable, state()} | {peer_id(), state()}.
+%% Selects a random available peer from the unverified pool.
+
 unverified_select(St, _Now, FilterFun) ->
     #?ST{rand = RState, use_rand_offset = ROffset, lookup_unver = Lookup} = St,
     {Result, RSt2} = lookup_select(Lookup, RState, ROffset, FilterFun),
     {Result, St#?ST{rand = RSt2}}.
 
+
 %--- PEER HANDLING FUNCTIONS ---------------------------------------------------
 
-%% Creates a new peer record.
 -spec peer_new(aec_peer:peer())
     -> peer().
+%% Creates a new peer record.
+
 peer_new(PeerData) ->
-    #peer{
-        immutable = PeerData
-    }.
+    #peer{immutable = PeerData}.
+
 
 %% Returns if the given peer is verified or unverified;
 %% does extra exhaustive check for sanity, and thus should not be called
 %% when the peer is in both verified and unverified pool (when upgrading).
 -spec peer_state(peer()) -> verified | unverified | undefined.
-peer_state(#peer{vidx = undefined, uidxs = []}) -> undefined;
+
+peer_state(#peer{vidx = undefined, uidxs = []})    -> undefined;
 peer_state(#peer{vidx = undefined, uidxs = [_|_]}) -> unverified;
-peer_state(#peer{vidx = _, uidxs = []}) -> verified.
+peer_state(#peer{vidx = _, uidxs = []})            -> verified.
 
-peer_is_selected(#peer{selected = Selected}) -> Selected.
 
-%% Updates peer rejection status.
 -spec peer_reject(peer(), millitimestamp()) -> peer().
+%% Updates peer rejection status.
+
 peer_reject(Peer, Now) ->
     #peer{rejected = Rejected} = Peer,
     Peer#peer{rejected = Rejected + 1, reject_time = Now}.
 
-%% Updates peer rejection status.
+
 -spec peer_reset(peer(), millitimestamp()) -> peer().
+%% Updates peer rejection status.
+
 peer_reset(Peer, _Now) ->
     Peer#peer{rejected = 0, reject_time = undefined}.
 
-%% Makes the peer selected.
+
 -spec peer_select(peer(), millitimestamp()) -> peer().
+%% Makes the peer selected.
+
 peer_select(Peer, Now) ->
     Peer#peer{selected = true, select_time = Now}.
 
-%% Makes the peer deselected.
+
 -spec peer_deselect(peer(), millitimestamp()) -> peer().
+%% Makes the peer deselected.
+
 peer_deselect(Peer, _Now) ->
     Peer#peer{selected = false}.
 
-%% Gives the time at which the peer should get out of standby
+
 -spec peer_standby_recovery_time(peer(), [non_neg_integer()])
     -> millitimestamp().
+%% Gives the time at which the peer should get out of standby
+
 peer_standby_recovery_time(Peer, BackoffTable) ->
     #peer{rejected = RejectCount, reject_time = RejectTime} = Peer,
     RejectTime + rejection_delay(BackoffTable, RejectCount).
 
-%% Returns if a peer is currently in standby.
+
 -spec peer_is_in_standby(peer(), [non_neg_integer()], millitimestamp())
     -> boolean().
+%% Returns if a peer is currently in standby.
+
 peer_is_in_standby(Peer, BackoffTable, Now) ->
     Now < peer_standby_recovery_time(Peer, BackoffTable).
 
-%% Returns if the given peer reached its rejection limit.
+
 -spec peer_has_expired(peer(), pos_integer()) -> boolean().
+%% Returns if the given peer reached its rejection limit.
+
 peer_has_expired(#peer{immutable = PeerData, rejected = Rejections}, MaxRejections) ->
     case aec_peer:is_trusted(PeerData) of
         true -> false;
         false -> Rejections > MaxRejections
     end.
 
-%% Adds a peer to a lookup table, handling other peers being moved.
+
 -spec peers_lookup_add(peer_map(), rand_state(), peer_id(),
                        lookup(), pos_integer())
     -> {lookup(), rand_state(), peer_map()}.
+%% Adds a peer to a lookup table, handling other peers being moved.
+
 peers_lookup_add(Peers, RSt, PeerId, Lookup, RecField) ->
     #{PeerId := Peer} = Peers,
     ?assertEqual(undefined, element(RecField, Peer)),
@@ -1560,9 +1637,11 @@ peers_lookup_add(Peers, RSt, PeerId, Lookup, RecField) ->
             {Lookup2, RSt2, Peers2}
     end.
 
-%% remove a peer from a lookup table, handling other peers being moved.
+
 -spec peers_lookup_del(peer_map(), peer_id(), lookup(), pos_integer())
     -> {lookup(), peer_map()}.
+%% remove a peer from a lookup table, handling other peers being moved.
+
 peers_lookup_del(Peers, PeerId, Lookup, RecField) ->
     #{PeerId := Peer} = Peers,
     case element(RecField, Peer) of
@@ -1584,6 +1663,7 @@ peers_lookup_del(Peers, PeerId, Lookup, RecField) ->
             end
     end.
 
+
 %--- GENERIC POOL HANDLING FUNCTIONS -------------------------------------------
 
 -ifdef(TEST).
@@ -1594,6 +1674,7 @@ pool_bucket_size(#pool{buckets = Buckets}, Index) ->
     length(Bucket).
 
 -endif.
+
 
 -spec pool_new(Count, Size, MaxRefs, EvictSkew) -> Pool
     when Count     :: pos_integer(),
@@ -2024,6 +2105,7 @@ max_rejections() ->
                                aecore, [peer_pool, max_rejections],
                                ?DEFAULT_MAX_REJECTIONS).
 
+
 db_persist_peer(PeerData) ->
     case aec_peer:is_trusted(PeerData) of
         true ->
@@ -2033,9 +2115,11 @@ db_persist_peer(PeerData) ->
         %% peers. The way of adding or removing trusted peers is using the
         %% config instead.
             pass;
-        false -> aec_db:write_peer(PeerData)
+        false ->
+            aec_db:write_peer(PeerData)
     end,
     ok.
+
 
 db_delete_peer(PeerData) ->
     aec_db:delete_peer(PeerData),
