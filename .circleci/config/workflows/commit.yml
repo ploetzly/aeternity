@@ -1,106 +1,107 @@
 when:
   not: << pipeline.schedule.name >>
 jobs:
-  - build:
-      name: build-<< matrix.otp >>
-      context: ae-slack
-      matrix:
-        parameters:
-          otp: ["otp23", "otp24"]
-      filters:
-        branches:
-          ignore:
-            - env/dev1
-            - env/dev2
-            - system-tests
+  # - build:
+  #     name: build-<< matrix.otp >>
+  #     context: ae-slack
+  #     matrix:
+  #       parameters:
+  #         otp: ["otp23", "otp24"]
+  #     filters:
+  #       branches:
+  #         ignore:
+  #           - env/dev1
+  #           - env/dev2
+  #           - system-tests
 
-  - build_nix:
-      context: ae-slack
-      filters:
-        branches:
-          only:
-            - << pipeline.parameters.master_branch >>
+  # - build_nix:
+  #     context: ae-slack
+  #     filters:
+  #       branches:
+  #         only:
+  #           - << pipeline.parameters.master_branch >>
 
-  - test:
-      context: ae-slack
-      matrix:
-        parameters:
-          otp: ["otp23", "otp24"]
-          target:
-            - "ct-roma"
-            - "ct-minerva"
-            - "ct-fortuna"
-            - "ct-lima"
-            - "ct-iris"
-            - "ct-latest"
-            - "ct-latest-no-aci"
-            - "ct-mnesia-rocksdb"
-            - "ct-mnesia-mrdb"
-        exclude:
-          - {otp: "otp24", target: "ct-roma"}
-          - {otp: "otp24", target: "ct-minerva"}
-          - {otp: "otp24", target: "ct-fortuna"}
-          - {otp: "otp24", target: "ct-lima"}
-          - {otp: "otp24", target: "ct-iris"}
-          - {otp: "otp24", target: "ct-latest-no-aci"}
-          - {otp: "otp24", target: "ct-mnesia-rocksdb"}
-          - {otp: "otp24", target: "ct-mnesia-mrdb"}
-      requires:
-        - build-<< matrix.otp >>
-      filters:
-        branches:
-          ignore:
-            - env/dev1
-            - env/dev2
-            - system-tests
+  # - test:
+  #     context: ae-slack
+  #     matrix:
+  #       parameters:
+  #         otp: ["otp23", "otp24"]
+  #         target:
+  #           - "ct-roma"
+  #           - "ct-minerva"
+  #           - "ct-fortuna"
+  #           - "ct-lima"
+  #           - "ct-iris"
+  #           - "ct-latest"
+  #           - "ct-latest-no-aci"
+  #           - "ct-mnesia-rocksdb"
+  #           - "ct-mnesia-mrdb"
+  #       exclude:
+  #         - {otp: "otp24", target: "ct-roma"}
+  #         - {otp: "otp24", target: "ct-minerva"}
+  #         - {otp: "otp24", target: "ct-fortuna"}
+  #         - {otp: "otp24", target: "ct-lima"}
+  #         - {otp: "otp24", target: "ct-iris"}
+  #         - {otp: "otp24", target: "ct-latest-no-aci"}
+  #         - {otp: "otp24", target: "ct-mnesia-rocksdb"}
+  #         - {otp: "otp24", target: "ct-mnesia-mrdb"}
+  #     requires:
+  #       - build-<< matrix.otp >>
+  #     filters:
+  #       branches:
+  #         ignore:
+  #           - env/dev1
+  #           - env/dev2
+  #           - system-tests
 
-  - eunit:
-      context: ae-slack
-      matrix:
-        parameters:
-          otp: ["otp23"]
-          target:
-            - "roma"
-            - "minerva"
-            - "fortuna"
-            - "lima"
-            - "iris"
-            - "latest"
-      requires:
-        - build-<< matrix.otp >>
-      filters:
-        branches:
-          ignore:
-            - env/dev1
-            - env/dev2
-            - system-tests
+  # - eunit:
+  #     context: ae-slack
+  #     matrix:
+  #       parameters:
+  #         otp: ["otp23"]
+  #         target:
+  #           - "roma"
+  #           - "minerva"
+  #           - "fortuna"
+  #           - "lima"
+  #           - "iris"
+  #           - "latest"
+  #     requires:
+  #       - build-<< matrix.otp >>
+  #     filters:
+  #       branches:
+  #         ignore:
+  #           - env/dev1
+  #           - env/dev2
+  #           - system-tests
 
-  - aevm-test:
-      context: ae-slack
-      requires:
-        - build-otp23
-      filters:
-        branches:
-          ignore:
-            - env/dev1
-            - env/dev2
-            - system-tests
+  # - aevm-test:
+  #     context: ae-slack
+  #     requires:
+  #       - build-otp23
+  #     filters:
+  #       branches:
+  #         ignore:
+  #           - env/dev1
+  #           - env/dev2
+  #           - system-tests
 
-  - static-analysis:
-      context: ae-slack
-      matrix:
-        parameters:
-          otp: ["otp23", "otp24"]
-      requires:
-        - build-<< matrix.otp >>
-      filters:
-        branches:
-          ignore:
-            - env/dev1
-            - env/dev2
-            - system-tests
+  # - static-analysis:
+  #     context: ae-slack
+  #     matrix:
+  #       parameters:
+  #         otp: ["otp23", "otp24"]
+  #     requires:
+  #       - build-<< matrix.otp >>
+  #     filters:
+  #       branches:
+  #         ignore:
+  #           - env/dev1
+  #           - env/dev2
+  #           - system-tests
 
   - docker-smoke-test:
+      name: docker-smoke-test
       context:
         - ae-slack
       filters:
@@ -112,26 +113,10 @@ jobs:
             - /releases\/.*/
             - << pipeline.parameters.master_branch >>
 
-  - docker-system-smoke-test:
-      context: ae-slack
-      filters:
-        branches:
-          ignore:
-            - env/dev1
-            - env/dev2
-            - system-tests
-
-  - docker-system-test:
-      context: ae-slack
-      filters:
-        branches:
-          only: system-tests
-
-  - docker-js-sdk-smoke-test:
+  - docker-smoke-test:
+      name: docker-smoke-test2
       context:
         - ae-slack
-      requires:
-        - docker-smoke-test
       filters:
         branches:
           ignore:
@@ -141,11 +126,10 @@ jobs:
             - /releases\/.*/
             - << pipeline.parameters.master_branch >>
 
-  - docker-db-smoke-test:
+  - docker-smoke-test:
+      name: docker-smoke-test3
       context:
         - ae-slack
-      requires:
-        - docker-smoke-test
       filters:
         branches:
           ignore:
@@ -155,240 +139,283 @@ jobs:
             - /releases\/.*/
             - << pipeline.parameters.master_branch >>
 
-  - js-sdk-smoke-test:
-      context: ae-slack
-      requires:
-        - linux-tarball
-      filters:
-        branches:
-          ignore:
-            - env/dev1
-            - env/dev2
-            - system-tests
+  # - docker-system-smoke-test:
+  #     context: ae-slack
+  #     filters:
+  #       branches:
+  #         ignore:
+  #           - env/dev1
+  #           - env/dev2
+  #           - system-tests
 
-  - db-smoke-test:
-      context: ae-slack
-      requires:
-        - linux-tarball
-      filters:
-        branches:
-          ignore:
-            - env/dev1
-            - env/dev2
-            - system-tests
+  # - docker-system-test:
+  #     context: ae-slack
+  #     filters:
+  #       branches:
+  #         only: system-tests
 
-  - rebar_lock_check:
-      context: ae-slack
-      requires:
-        - build-otp23
-      filters:
-        branches:
-          ignore:
-            - env/dev1
-            - env/dev2
-            - system-tests
+  # - docker-js-sdk-smoke-test:
+  #     context:
+  #       - ae-slack
+  #     requires:
+  #       - docker-smoke-test
+  #     filters:
+  #       branches:
+  #         ignore:
+  #           - env/dev1
+  #           - env/dev2
+  #           - system-tests
+  #           - /releases\/.*/
+  #           - << pipeline.parameters.master_branch >>
 
-  - linux-tarball:
-      name: linux-tarball
-      package_name: aeternity-$CIRCLE_SHA1-ubuntu-x86_64.tar.gz
-      context: ae-slack
-      filters:
-        branches:
-          ignore:
-            - system-tests
+  # - docker-db-smoke-test:
+  #     context:
+  #       - ae-slack
+  #     requires:
+  #       - docker-smoke-test
+  #     filters:
+  #       branches:
+  #         ignore:
+  #           - env/dev1
+  #           - env/dev2
+  #           - system-tests
+  #           - /releases\/.*/
+  #           - << pipeline.parameters.master_branch >>
 
-  - linux-tarball:
-      name: linux-tarball-bundle
-      package_name: aeternity-bundle-$CIRCLE_SHA1-ubuntu-x86_64.tar.gz
-      aeplugin_devmode: true
-      context: ae-slack
-      filters:
-        branches:
-          ignore:
-            - env/dev1
-            - env/dev2
-            - system-tests
+  # - js-sdk-smoke-test:
+  #     context: ae-slack
+  #     requires:
+  #       - linux-tarball
+  #     filters:
+  #       branches:
+  #         ignore:
+  #           - env/dev1
+  #           - env/dev2
+  #           - system-tests
 
-  - linux-standalone:
-      name: linux-standalone
-      package_name: aeternity-$CIRCLE_SHA1-ubuntu-x86_64-standalone
-      context: ae-slack
-      filters:
-        branches:
-          only:
-            - /releases\/.*/
-            - << pipeline.parameters.master_branch >>
+  # - db-smoke-test:
+  #     context: ae-slack
+  #     requires:
+  #       - linux-tarball
+  #     filters:
+  #       branches:
+  #         ignore:
+  #           - env/dev1
+  #           - env/dev2
+  #           - system-tests
 
-  - ubuntu_package:
-      requires: []
-      context: ae-slack
-      filters:
-        branches:
-          only:
-            - /releases\/.*/
-            - << pipeline.parameters.master_branch >>
+  # - rebar_lock_check:
+  #     context: ae-slack
+  #     requires:
+  #       - build-otp23
+  #     filters:
+  #       branches:
+  #         ignore:
+  #           - env/dev1
+  #           - env/dev2
+  #           - system-tests
 
-  - upload-artifacts-s3:
-      name: upload-artifacts-s3
-      bucket: << pipeline.parameters.s3_builds_bucket >>
-      context:
-        - ae-slack
-        - ae-vault-node
-      requires:
-        - linux-tarball
-        - linux-tarball-bundle
-      filters:
-        branches:
-          ignore:
-            # Forked pull requests have CIRCLE_BRANCH set to pull/XXX
-            - /pull\/[0-9]+/
-            - env/dev1
-            - env/dev2
-            - system-tests
+  # - linux-tarball:
+  #     name: linux-tarball
+  #     package_name: aeternity-$CIRCLE_SHA1-ubuntu-x86_64.tar.gz
+  #     context: ae-slack
+  #     filters:
+  #       branches:
+  #         ignore:
+  #           - system-tests
 
-  - promote-tarball-s3:
-      name: promote-tarball-s3
-      uri: s3://<< pipeline.parameters.s3_builds_bucket >>/aeternity-$CIRCLE_SHA1-ubuntu-x86_64.tar.gz
-      context:
-        - ae-slack
-        - ae-vault-node
-      requires:
-        - upload-artifacts-s3
-      filters:
-        branches:
-          only:
-            - /releases\/.*/
-            - << pipeline.parameters.master_branch >>
+  # - linux-tarball:
+  #     name: linux-tarball-bundle
+  #     package_name: aeternity-bundle-$CIRCLE_SHA1-ubuntu-x86_64.tar.gz
+  #     aeplugin_devmode: true
+  #     context: ae-slack
+  #     filters:
+  #       branches:
+  #         ignore:
+  #           - env/dev1
+  #           - env/dev2
+  #           - system-tests
 
-  - macos-tarball:
-      name: macos-tarball
-      package_name: aeternity-$CIRCLE_SHA1-macos-x86_64.tar.gz
-      context: ae-slack
-      requires: []
-      filters:
-        branches:
-          only:
-            - /releases\/.*/
-            - << pipeline.parameters.master_branch >>
+  # - linux-standalone:
+  #     name: linux-standalone
+  #     package_name: aeternity-$CIRCLE_SHA1-ubuntu-x86_64-standalone
+  #     context: ae-slack
+  #     filters:
+  #       branches:
+  #         only:
+  #           - /releases\/.*/
+  #           - << pipeline.parameters.master_branch >>
 
-  - macos-tarball:
-      name: macos-tarball-bundle
-      package_name: aeternity-bundle-$CIRCLE_SHA1-macos-x86_64.tar.gz
-      aeplugin_devmode: true
-      context: ae-slack
-      filters:
-        branches:
-          only:
-            - /releases\/.*/
-            - << pipeline.parameters.master_branch >>
+  # - ubuntu_package:
+  #     requires: []
+  #     context: ae-slack
+  #     filters:
+  #       branches:
+  #         only:
+  #           - /releases\/.*/
+  #           - << pipeline.parameters.master_branch >>
 
-  - publish-build-packages:
-      requires:
-        - ubuntu_package
-      context: ae-slack
-      filters:
-        branches:
-          only:
-            - /releases\/.*/
-            - << pipeline.parameters.master_branch >>
+  # - upload-artifacts-s3:
+  #     name: upload-artifacts-s3
+  #     bucket: << pipeline.parameters.s3_builds_bucket >>
+  #     context:
+  #       - ae-slack
+  #       - ae-vault-node
+  #     requires:
+  #       - linux-tarball
+  #       - linux-tarball-bundle
+  #     filters:
+  #       branches:
+  #         ignore:
+  #           # Forked pull requests have CIRCLE_BRANCH set to pull/XXX
+  #           - /pull\/[0-9]+/
+  #           - env/dev1
+  #           - env/dev2
+  #           - system-tests
 
-  - deploy:
-      name: deploy-integration
-      version: $CIRCLE_SHA1
-      env: integration
-      downtime: 900 #15m
-      context:
-        - ae-slack
-        - ae-vault-node
-      requires:
-        - test
-        - eunit
-        - docker-db-smoke-test
-        - db-smoke-test
-        - aevm-test
-        - static-analysis
-        - rebar_lock_check
-        - linux-tarball
-      filters:
-        branches:
-          only: << pipeline.parameters.master_branch >>
+  # - promote-tarball-s3:
+  #     name: promote-tarball-s3
+  #     uri: s3://<< pipeline.parameters.s3_builds_bucket >>/aeternity-$CIRCLE_SHA1-ubuntu-x86_64.tar.gz
+  #     context:
+  #       - ae-slack
+  #       - ae-vault-node
+  #     requires:
+  #       - upload-artifacts-s3
+  #     filters:
+  #       branches:
+  #         only:
+  #           - /releases\/.*/
+  #           - << pipeline.parameters.master_branch >>
 
-  - docker-image:
-      name: docker-image-mainline
-      context:
-        - ae-slack
-        - ae-dockerhub
-      tag: ${CIRCLE_BRANCH/\//_}
-      requires:
-        - test
-        - eunit
-        - aevm-test
-        - static-analysis
-        - rebar_lock_check
-      filters:
-        branches:
-          only:
-            - << pipeline.parameters.master_branch >>
+  # - macos-tarball:
+  #     name: macos-tarball
+  #     package_name: aeternity-$CIRCLE_SHA1-macos-x86_64.tar.gz
+  #     context: ae-slack
+  #     requires: []
+  #     filters:
+  #       branches:
+  #         only:
+  #           - /releases\/.*/
+  #           - << pipeline.parameters.master_branch >>
 
-  - docker-image:
-      name: docker-image-mainline-bundle
-      context:
-        - ae-slack
-        - ae-dockerhub
-      aeplugin_devmode: true
-      tag: ${CIRCLE_BRANCH/\//_}-bundle
-      requires:
-        - test
-        - eunit
-        - aevm-test
-        - static-analysis
-        - rebar_lock_check
-      filters:
-        branches:
-          only:
-            - << pipeline.parameters.master_branch >>
+  # - macos-tarball:
+  #     name: macos-tarball-bundle
+  #     package_name: aeternity-bundle-$CIRCLE_SHA1-macos-x86_64.tar.gz
+  #     aeplugin_devmode: true
+  #     context: ae-slack
+  #     filters:
+  #       branches:
+  #         only:
+  #           - /releases\/.*/
+  #           - << pipeline.parameters.master_branch >>
 
-  - deploy:
-      name: deploy-next
-      version: $CIRCLE_SHA1
-      env: next
-      downtime: 900 #15m
-      context:
-        - ae-slack
-        - ae-vault-node
-      requires:
-        - test
-        - eunit
-        - aevm-test
-        - static-analysis
-        - rebar_lock_check
-        - linux-tarball
-      filters:
-        branches:
-          only: << pipeline.parameters.master_branch >>
+  # - publish-build-packages:
+  #     requires:
+  #       - ubuntu_package
+  #     context: ae-slack
+  #     filters:
+  #       branches:
+  #         only:
+  #           - /releases\/.*/
+  #           - << pipeline.parameters.master_branch >>
 
-  - deploy:
-      name: deploy-dev1
-      version: $CIRCLE_SHA1
-      env: dev1
-      context:
-        - ae-slack
-        - ae-vault-node
-      requires:
-        - linux-tarball
-      filters:
-        branches:
-          only: env/dev1
+  # - deploy:
+  #     name: deploy-integration
+  #     version: $CIRCLE_SHA1
+  #     env: integration
+  #     downtime: 900 #15m
+  #     context:
+  #       - ae-slack
+  #       - ae-vault-node
+  #     requires:
+  #       - test
+  #       - eunit
+  #       - docker-db-smoke-test
+  #       - db-smoke-test
+  #       - aevm-test
+  #       - static-analysis
+  #       - rebar_lock_check
+  #       - linux-tarball
+  #     filters:
+  #       branches:
+  #         only: << pipeline.parameters.master_branch >>
 
-  - deploy:
-      name: deploy-dev2
-      version: $CIRCLE_SHA1
-      env: dev2
-      context:
-        - ae-slack
-        - ae-vault-node
-      requires:
-        - linux-tarball
-      filters:
-        branches:
-          only: env/dev2
+  # - docker-image:
+  #     name: docker-image-mainline
+  #     context:
+  #       - ae-slack
+  #       - ae-dockerhub
+  #     tag: ${CIRCLE_BRANCH/\//_}
+  #     requires:
+  #       - test
+  #       - eunit
+  #       - aevm-test
+  #       - static-analysis
+  #       - rebar_lock_check
+  #     filters:
+  #       branches:
+  #         only:
+  #           - << pipeline.parameters.master_branch >>
+
+  # - docker-image:
+  #     name: docker-image-mainline-bundle
+  #     context:
+  #       - ae-slack
+  #       - ae-dockerhub
+  #     aeplugin_devmode: true
+  #     tag: ${CIRCLE_BRANCH/\//_}-bundle
+  #     requires:
+  #       - test
+  #       - eunit
+  #       - aevm-test
+  #       - static-analysis
+  #       - rebar_lock_check
+  #     filters:
+  #       branches:
+  #         only:
+  #           - << pipeline.parameters.master_branch >>
+
+  # - deploy:
+  #     name: deploy-next
+  #     version: $CIRCLE_SHA1
+  #     env: next
+  #     downtime: 900 #15m
+  #     context:
+  #       - ae-slack
+  #       - ae-vault-node
+  #     requires:
+  #       - test
+  #       - eunit
+  #       - aevm-test
+  #       - static-analysis
+  #       - rebar_lock_check
+  #       - linux-tarball
+  #     filters:
+  #       branches:
+  #         only: << pipeline.parameters.master_branch >>
+
+  # - deploy:
+  #     name: deploy-dev1
+  #     version: $CIRCLE_SHA1
+  #     env: dev1
+  #     context:
+  #       - ae-slack
+  #       - ae-vault-node
+  #     requires:
+  #       - linux-tarball
+  #     filters:
+  #       branches:
+  #         only: env/dev1
+
+  # - deploy:
+  #     name: deploy-dev2
+  #     version: $CIRCLE_SHA1
+  #     env: dev2
+  #     context:
+  #       - ae-slack
+  #       - ae-vault-node
+  #     requires:
+  #       - linux-tarball
+  #     filters:
+  #       branches:
+  #         only: env/dev2

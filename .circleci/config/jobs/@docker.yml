@@ -1,5 +1,5 @@
 docker-image:
-  executor: infrastructure_container_stable
+  executor: buildpack
   parameters:
     aeplugin_devmode:
       type: boolean
@@ -20,7 +20,7 @@ docker-image:
     - fail_notification
 
 docker-tag:
-  executor: infrastructure_container_stable
+  executor: buildpack
   parameters:
     src:
       type: string
