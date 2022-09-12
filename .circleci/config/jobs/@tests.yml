@@ -24,7 +24,7 @@ test:
         target: << parameters.target >>
 
 aevm-test:
-  executor: builder_container_otp2
+  executor: builder_container_otp22
   steps:
     - fixed_checkout
     - restore_rebar_cache
