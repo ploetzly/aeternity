@@ -35,9 +35,13 @@
          request_block_by_hash/1,
          request_block_by_height/1,
          request_top/0,
+         request_commitments_by_hash/1,
+         request_commitments_by_height/1,
          %% blocking getting of blocks
          fetch_block_by_hash/1,
          fetch_block_by_height/1,
+         fetch_commitments_by_hash/1,
+         fetch_commitments_by_height/1,
 
          post_commitment/2
         ]).
@@ -115,6 +119,12 @@ request_block_by_height(Height) ->
 request_top() ->
     ?SERVER ! check_parent.
 
+request_commitments_by_hash(Hash) ->
+    gen_server:cast(?SERVER, {request_commitments_by_hash, Hash}).
+
+request_commitments_by_height(Height) ->
+    gen_server:cast(?SERVER, {request_commitments_by_height, Height}).
+
 %% this blocks the caller process, use with caution
 -spec fetch_block_by_hash(binary()) -> {ok, aec_parent_chain_block:block()}
                                      | {error, not_found | no_parent_chain_agreement}.
@@ -126,6 +136,18 @@ fetch_block_by_hash(Hash) ->
                                                 | {error, not_found | no_parent_chain_agreement}.
 fetch_block_by_height(Height) ->
     gen_server:call(?SERVER, {fetch_block_by_height, Height}).
+
+%% this commitmentss the caller process, use with caution
+-spec fetch_commitments_by_hash(binary()) -> {ok, aec_parent_chain_block:commitments()}
+                                     | {error, not_found | no_parent_chain_agreement}.
+fetch_commitments_by_hash(Hash) ->
+    gen_server:call(?SERVER, {fetch_commitments_by_hash, Hash}).
+
+%% this commitmentss the caller process, use with caution
+-spec fetch_commitments_by_height(non_neg_integer()) -> {ok, aec_parent_chain_block:commitments()}
+                                                | {error, not_found | no_parent_chain_agreement}.
+fetch_commitments_by_height(Height) ->
+    gen_server:call(?SERVER, {fetch_commitments_by_height, Height}).
 
 post_commitment(Who, Hash) ->
     gen_server:call(?SERVER, {post_commitment, Who, Hash}).
@@ -163,6 +185,12 @@ handle_call({fetch_block_by_hash, Hash}, _From, State) ->
 handle_call({fetch_block_by_height, Height}, _From, State) ->
     Reply = handle_fetch_block(fun fetch_block_by_height/4, Height, State),
     {reply, Reply, State};
+handle_call({fetch_commitments_by_hash, Hash}, _From, State) ->
+    Reply = handle_fetch_commitments_by_hash(Hash, State),
+    {reply, Reply, State};
+handle_call({fetch_commitments_by_height, Height}, _From, State) ->
+    Reply = handle_fetch_commitments_by_height(Height, State),
+    {reply, Reply, State};
 handle_call({post_commitment, Who, Hash}, _From, State) ->
     Reply = post_commitment(Who, Hash, State),
     {reply, Reply, State};
@@ -183,6 +211,20 @@ handle_cast({request_block_by_height, Height}, State) ->
         {ok, Block} -> aec_parent_chain_cache:post_block(Block);
         {error, not_found} -> pass;
         {error, no_parent_chain_agreement} -> pass
+    end,
+    {noreply, State};
+handle_cast({request_commitments_by_hash, Hash}, State) ->
+    case handle_fetch_commitments_by_hash(Hash, State) of
+        {ok, Txs} ->
+            aec_parent_chain_cache:post_collected_commitments(Hash, Txs);
+        {error, _} -> pass
+    end,
+    {noreply, State};
+handle_cast({request_commitments_by_height, Height}, State) ->
+    case handle_fetch_commitments_by_height(Height, State) of
+        {ok, Txs} ->
+            aec_parent_chain_cache:post_collected_commitments_by_height(Height, Txs);
+        {error, _} -> pass
     end,
     {noreply, State}.
 
@@ -332,6 +374,38 @@ handle_fetch_block(Fun, Arg,
             lager:warning("Parent nodes are unable to reach consensus", []),
             Err
     end.
+
+handle_fetch_commitments_by_hash(Hash, State) ->
+    handle_fetch_commitments_(get_commitment_tx_in_block, Hash, State).
+
+handle_fetch_commitments_by_height(Height, State) ->
+    handle_fetch_commitments_(get_commitment_tx_at_height, Height, State).
+
+handle_fetch_commitments_(FunName, Arg,
+                          #state{ parent_hosts = ParentNodes,
+                                  parent_conn_mod = Mod,
+                                  rpc_seed = Seed,
+                                  c_details = CDetails}) ->
+    #commitment_details{recipient = Receiver} = CDetails,
+    %% Parallel fetch commitment from all configured parent chain nodes
+    FetchFun =
+        fun(Host, Port, User, Password) ->
+            case apply(Mod, FunName, [Host, Port, User, Password, Seed, Arg, Receiver]) of
+                {ok, _Txs}  = OK -> OK;
+                {error, _Reason} = Err -> Err
+            end
+        end,
+    {Good, Errors} = aeu_lib:pmap(FetchFun, ParentNodes, 10000),
+    case FetchFun(Arg, Mod, ParentNodes, Seed) of
+        {ok, Txs} -> {ok, Txs};
+        {error, not_found} -> {error, not_found};
+        {error, no_parent_chain_agreement} = Err ->
+            %% TODO: decide what to do: this is likely happening because of
+            %% rapid parent chain reorganizations
+            lager:warning("Parent nodes are unable to reach consensus regarding commitments", []),
+            Err
+    end.
+
 
 post_commitment(Who, Commitment,
             #state{ parent_hosts = ParentNodes,

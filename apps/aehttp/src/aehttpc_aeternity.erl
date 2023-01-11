@@ -22,10 +22,12 @@ get_header_by_height(Height, Host, Port, _User, _Password, _Seed) ->
     get_key_block_header_by_height(Height, Host, Port).
 
 get_commitment_tx_in_block(Host, Port, _User, _Password, _Seed, BlockHash, ParentHCAccountPubKey) ->
+    %% TODO: handle hash not in the main chain
     {ok, #{<<"micro_blocks">> := MBs}} = get_generation(Host, Port, BlockHash),
     get_transactions(Host, Port, MBs, ParentHCAccountPubKey).
 
 get_commitment_tx_at_height(Host, Port, _User, _Password, _Seed, Height, ParentHCAccountPubKey) ->
+    %% TODO: handle height not in the main chain
     {ok, #{<<"micro_blocks">> := MBs}} = get_generation_by_height(Host, Port, Height),
     get_transactions(Host, Port, MBs, ParentHCAccountPubKey).
 

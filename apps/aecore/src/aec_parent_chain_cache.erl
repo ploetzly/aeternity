@@ -36,6 +36,8 @@
             terminate/2, code_change/3]).
 
 -export([post_block/1,
+         post_collected_commitments/2,
+         post_collected_commitments_by_height/2,
          get_block_by_height/1]).
 
 -export([get_state/0]).
@@ -46,15 +48,16 @@
 
 -record(state,
     {
-        child_top_height                    :: non_neg_integer(),
-        child_start_height                  :: non_neg_integer(),
-        pc_confirmations                    :: non_neg_integer(),
-        max_size                            :: non_neg_integer(),
-        blocks          = #{}               :: #{non_neg_integer() => aec_parent_chain_block:block()},
-        top_height      = 0                 :: non_neg_integer(),
-        sign_module     = aec_preset_keys   :: atom(), %% TODO: make it configurable
-        initial_commits_heights = []        :: list(),
-        publishing_commitments = false      :: boolean() 
+        child_top_height                        :: non_neg_integer(),
+        child_start_height                      :: non_neg_integer(),
+        pc_confirmations                        :: non_neg_integer(),
+        max_size                                :: non_neg_integer(),
+        blocks              = #{}               :: #{non_neg_integer() => aec_parent_chain_block:block()},
+        blocks_hash_index   = #{}               :: #{aec_parent_chain_block:hash() => non_neg_integer()},
+        top_height          = 0                 :: non_neg_integer(),
+        sign_module         = aec_preset_keys   :: atom(), %% TODO: make it configurable
+        initial_commits_heights = []            :: list(),
+        publishing_commitments = false          :: boolean() 
     }).
 -type state() :: #state{}.
 
@@ -76,6 +79,14 @@ stop() ->
 -spec post_block(aec_parent_chain_block:block()) -> ok.
 post_block(Block) ->
     gen_server:cast(?SERVER, {post_block, Block}).
+
+-spec post_collected_commitments(aec_parent_chain_block:hash(), list()) -> ok.
+post_collected_commitments(BlockHash, Commitments) ->
+    gen_server:cast(?SERVER, {post_collected_commitments, {height, BlockHash}, Commitments}).
+
+-spec post_collected_commitments_by_height(non_neg_integer(), list()) -> ok.
+post_collected_commitments_by_height(BlockHeight, Commitments) ->
+    gen_server:cast(?SERVER, {post_collected_commitments, {hash, BlockHeight}, Commitments}).
 
 -spec get_block_by_height(non_neg_integer()) -> {ok, aec_parent_chain_block:block()}
                                               | {error, not_in_cache}
@@ -139,6 +150,10 @@ handle_cast({post_block, Block}, #state{} = State0) ->
     State = post_block(Block, State0),
     State1 = maybe_post_initial_commitments(Block, State),
     {noreply, State1};
+handle_cast({post_collected_commitments, HashOrHeight, Commitments}, #state{} = State0) ->
+    State = post_collected_commitments(HashOrHeight, Commitments, State0),
+    %% TODO check for a race with hashes
+    {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -198,14 +213,26 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 
 -spec insert_block(aec_parent_chain_block:block(), state()) -> state().
-insert_block(Block, #state{blocks = Blocks} = State) ->
+insert_block(Block, #state{blocks = Blocks,
+                           blocks_hash_index = Index} = State) ->
     Height = aec_parent_chain_block:height(Block),
-    State#state{blocks = maps:put(Height, Block, Blocks)}.
+    Hash = aec_parent_chain_block:hash(Block),
+    State#state{blocks = maps:put(Height, Block, Blocks),
+                blocks_hash_index = maps:put(Hash, Height, Index)}.
 
 -spec get_block(non_neg_integer(), state()) -> {ok, aec_parent_chain_block:block()} | {error, not_in_cache}.
 get_block(Height, #state{blocks = Blocks}) ->
     case maps:find(Height, Blocks) of
         {ok, _Block} = OK -> OK;
+        error ->
+            {error, not_in_cache}
+    end.
+    
+-spec get_block_height_by_hash(aec_parent_chain_block:hash(), state()) ->
+    {ok, non_neg_integer()} | {error, not_in_cache}.
+get_block_height_by_hash(Hash, #state{blocks_hash_index = Index}) ->
+    case maps:find(Hash, Index) of
+        {ok, _Height} = OK -> OK;
         error ->
             {error, not_in_cache}
     end.
@@ -217,8 +244,15 @@ max_block(#state{blocks = Blocks}) ->
     lists:max(maps:keys(Blocks)).
     
 -spec delete_block(non_neg_integer(), state()) -> state().
-delete_block(Height, #state{blocks = Blocks} = State) ->
-    State#state{blocks = maps:remove(Height, Blocks)}.
+delete_block(Height, #state{blocks = Blocks,
+                            blocks_hash_index = Index} = State) ->
+    case get_block(Height, State) of
+        {ok, Block} ->
+            Hash = aec_parent_chain_block:hash(Block),
+            State#state{blocks = maps:remove(Height, Blocks),
+                        blocks_hash_index = maps:remove(Hash, Index)};
+        {error, not_in_cache} -> State
+    end.
 
 state_to_map(#state{child_start_height = StartHeight,
                     child_top_height   = ChildHeight,
@@ -245,6 +279,7 @@ post_block(Block, #state{max_size = MaxSize,
                          top_height = TopHeight} = State0) ->
     TargetHeight = target_parent_height(State0),
     BlockHeight = aec_parent_chain_block:height(Block),
+    BlockHash = aec_parent_chain_block:hash(Block),
     MaxBlockToRequest = TargetHeight + MaxSize - 1,
     GCHeight = min_cachable_parent_height(State0),
     case BlockHeight < GCHeight of
@@ -271,6 +306,7 @@ post_block(Block, #state{max_size = MaxSize,
                     State1 =
                         case BlockHeight > GCHeight of
                             true ->
+                                aec_parent_connector:request_commitments_by_hash(BlockHash),
                                 insert_block(Block, State0);
                             false ->
                                 State0
@@ -287,6 +323,22 @@ post_block(Block, #state{max_size = MaxSize,
                     maybe_request_next_block(BlockHeight, State3),
                     State3
             end
+    end.
+
+post_collected_commitments({hash, Hash}, Commitments, #state{ } = State) ->
+    case get_block_height_by_hash(Hash, State) of
+        {ok, Height} ->
+            post_collected_commitments({height, Height}, Commitments, State);
+        {error, not_in_cache} -> State %% TODO: handle forks
+    end;
+post_collected_commitments({height, Height}, Commitments,
+                           #state{ } = State) ->
+    case get_block(Height, State) of
+        {ok, Block0} ->
+            Block = aec_parent_chain_block:set_commitments(Block0, Commitments),
+            insert_block(Block, State);
+        {error, _} -> %% old block
+            State
     end.
 
 maybe_request_previous_block(0 = _BlockHeight, _State) -> pass;
