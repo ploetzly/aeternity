@@ -389,15 +389,16 @@ handle_fetch_commitments_(FunName, Arg,
     #commitment_details{recipient = Receiver} = CDetails,
     %% Parallel fetch commitment from all configured parent chain nodes
     FetchFun =
-        fun(Host, Port, User, Password) ->
+        fun(#{host := Host, port := Port,
+              user := User, password := Password} ) ->
             case apply(Mod, FunName, [Host, Port, User, Password, Seed, Arg, Receiver]) of
                 {ok, _Txs}  = OK -> OK;
                 {error, _Reason} = Err -> Err
             end
         end,
     {Good, Errors} = aeu_lib:pmap(FetchFun, ParentNodes, 10000),
-    case FetchFun(Arg, Mod, ParentNodes, Seed) of
-        {ok, Txs} -> {ok, Txs};
+    case responses_consensus(Good, Errors, length(ParentNodes)) of
+        {ok, Txs, _} -> {ok, Txs};
         {error, not_found} -> {error, not_found};
         {error, no_parent_chain_agreement} = Err ->
             %% TODO: decide what to do: this is likely happening because of
@@ -432,7 +433,7 @@ post_commitment(Who, Commitment,
     %% TODO: maybe track a transaction's progress?
     {Good, Errors} = aeu_lib:pmap(Fun, ParentNodes, 10000),
     case responses_consensus(Good, Errors, length(ParentNodes)) of
-       {ok, TxHash, _} when is_binary (TxHash) -> ok;
+        {ok, TxHash, _} when is_binary (TxHash) -> ok;
         {ok, {error, invalid_transaction}, _} ->
             lager:warning("Unable to post commitment: invalid_transaction", []),
             {error, invalid_transaction};

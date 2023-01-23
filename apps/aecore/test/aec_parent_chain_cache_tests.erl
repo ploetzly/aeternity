@@ -500,6 +500,8 @@ mock_parent_connector() ->
                 fun() -> ok end),
     meck:expect(aec_parent_connector, post_commitment,
                 fun(_Who, _What) -> ok end),
+    meck:expect(aec_parent_connector, request_commitments_by_hash,
+                fun(_) -> [] end),
     ok.
 
 mock_stakers() ->
