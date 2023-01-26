@@ -267,9 +267,10 @@ jobs:
       requires: []
       filters:
         branches:
-          only:
-            - /releases\/.*/
-            - << pipeline.parameters.master_branch >>
+          ignore:
+            - env/dev1
+            - env/dev2
+            - system-tests
 
   - macos-tarball:
       name: macos-tarball-bundle
