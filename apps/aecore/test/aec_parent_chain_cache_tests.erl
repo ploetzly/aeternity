@@ -75,6 +75,34 @@ produce_commitments_test_() ->
         {"Stopping and starting block production dictates commitments emmitting", fun block_production_dictates_commitments/0}
      ]}.
 
+collect_commitments_test_() ->
+    {foreach,
+     fun() ->
+            meck:new(aec_chain, []),
+            meck:expect(aec_chain, top_height, fun() -> 0 end),
+            meck:expect(aec_chain, genesis_hash, fun() -> height_to_hash(0) end),
+            meck:new(aec_conductor, []),
+            meck:new(aetx_env, []),
+            meck:expect(aetx_env, tx_env_and_trees_from_hash,
+                        fun(_, _Hash) -> {tx_env, trees} end),
+            mock_parent_connector(),
+            meck:expect(aec_parent_connector, request_commitments_by_hash,
+                        fun(_) -> [] end),
+            mock_stakers(),
+            mock_events()
+     end,
+     fun(_) ->
+            unmock_events(),
+            unmock_stakers(),
+            meck:unload(aec_chain),
+            meck:unload(aetx_env),
+            meck:unload(aec_conductor),
+            unmock_parent_connector()
+     end,
+     [  {"No commitments collected", fun no_commitments_collected/0}
+     ]}.
+
+
 
 %%%===================================================================
 %%% Test cases
@@ -247,6 +275,8 @@ no_commitments_before_start() ->
     ?TEST_MODULE:stop(),
     ok.
 
+no_commitments_collected() ->
+    ok.
 post_initial_commitments() ->
     CacheMaxSize = 20,
     StartHeight = 200,

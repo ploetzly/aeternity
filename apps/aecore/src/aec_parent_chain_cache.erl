@@ -38,7 +38,8 @@
 -export([post_block/1,
          post_collected_commitments/2,
          post_collected_commitments_by_height/2,
-         get_block_by_height/1]).
+         get_block_by_height/1,
+         get_commitments/1]).
 
 -export([get_state/0]).
 
@@ -99,6 +100,21 @@ get_block_by_height(Height) ->
         {error, {not_enough_confirmations, _}} = Err -> Err
     end.
 
+-spec get_commitments(binary()) -> {ok, list()}
+                                | {error, not_in_cache}
+                                | {error, not_fetched}
+                                | {error, {not_enough_confirmations, aec_parent_chain_block:block()}}.
+get_commitments(Hash) ->
+    case gen_server:call(?SERVER, {get_commitments, Hash}) of
+        {ok, _B} = OK -> OK;
+        {error, not_in_cache} = Err ->
+            Err;
+        {error, not_fetched} = Err ->
+            Err;
+        {error, {not_enough_confirmations, _}} = Err -> Err
+    end.
+
+
 -spec get_state() -> {ok, map()}.
 get_state() ->
     gen_server:call(?SERVER, get_state).
@@ -136,6 +152,25 @@ handle_call({get_block_by_height, Height}, _From,
             {ok, Block} when Height > TopHeight - Confirmations ->
                 {error, {not_enough_confirmations, Block}};
             {ok, _Block} = OK -> OK
+        end,
+    {reply, Reply, State};
+handle_call({get_commitments, Hash}, _From,
+            #state{pc_confirmations = Confirmations,
+                   top_height = TopHeight } = State) ->
+    Reply = 
+        case get_block_height_by_hash(Hash, State) of
+            {error, _} = Err -> Err;
+            {ok, Height} ->
+                {ok, Block} = get_block(Height, State),
+                case Height > TopHeight - Confirmations of
+                    true->
+                        {error, {not_enough_confirmations, Block}};
+                    false ->
+                        case aec_parent_chain_block:commitments(Block) of
+                            error -> {error, not_fetched}; %% TODO: maybe request them?
+                            {ok, _Commitments} = Ok -> Ok
+                        end
+                end
         end,
     {reply, Reply, State};
 handle_call(get_state, _From, State) ->
