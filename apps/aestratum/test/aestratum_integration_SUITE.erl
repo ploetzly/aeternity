@@ -468,6 +468,7 @@ write_stratum_keys(Dir, Cfg) ->
 
 latest_version(Top) ->
     Vsns = filelib:wildcard(filename:join([Top, "lib", "aestratum-*"])),
+    ct:log("Vsns ~p", [Vsns]),
     lists:last(lists:sort(fun vsn_cmp/2, Vsns)).
 
 vsn_cmp(A, B) ->
