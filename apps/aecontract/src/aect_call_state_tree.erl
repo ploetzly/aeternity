@@ -20,7 +20,8 @@
         , iterator/1
         , prune/2
         , prune_without_backend/1
-        , root_hash/1]).
+        , root_hash/1
+        , db/1 ]).
 
 -export([ from_binary_without_backend/1
         , to_binary_without_backend/1
@@ -137,6 +138,10 @@ call_id(<<_:?PUB_SIZE/unit:8, CallId/binary>> = _CallTreeId) ->
 -spec root_hash(tree()) -> {ok, aeu_mtrees:root_hash()} | {error, empty}.
 root_hash(#call_tree{calls = CtTree}) ->
     aeu_mtrees:root_hash(CtTree).
+
+-spec db(tree()) -> {ok, aeu_mp_trees:db()}.
+db(#call_tree{calls = CtTree}) ->
+    aeu_mtrees:db(CtTree).
 
 %% -- Commit to db --
 
