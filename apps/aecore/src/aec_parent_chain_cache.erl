@@ -83,11 +83,11 @@ post_block(Block) ->
 
 -spec post_collected_commitments(aec_parent_chain_block:hash(), list()) -> ok.
 post_collected_commitments(BlockHash, Commitments) ->
-    gen_server:cast(?SERVER, {post_collected_commitments, {height, BlockHash}, Commitments}).
+    gen_server:cast(?SERVER, {post_collected_commitments, {hash, BlockHash}, Commitments}).
 
 -spec post_collected_commitments_by_height(non_neg_integer(), list()) -> ok.
 post_collected_commitments_by_height(BlockHeight, Commitments) ->
-    gen_server:cast(?SERVER, {post_collected_commitments, {hash, BlockHeight}, Commitments}).
+    gen_server:cast(?SERVER, {post_collected_commitments, {height, BlockHeight}, Commitments}).
 
 -spec get_block_by_height(non_neg_integer()) -> {ok, aec_parent_chain_block:block()}
                                               | {error, not_in_cache}
@@ -163,8 +163,11 @@ handle_call({get_commitments, Hash}, _From,
             {ok, Height} ->
                 {ok, Block} = get_block(Height, State),
                 case Height > TopHeight - Confirmations of
-                    true->
-                        {error, {not_enough_confirmations, Block}};
+                    true ->
+                        case aec_parent_chain_block:commitments(Block) of
+                            error -> {error, {not_enough_confirmations, not_fetched}}; %% TODO: maybe request them?
+                            {ok, _Commitments} = Ok -> {error, {not_enough_confirmations, Ok}}
+                        end;
                     false ->
                         case aec_parent_chain_block:commitments(Block) of
                             error -> {error, not_fetched}; %% TODO: maybe request them?
@@ -364,15 +367,19 @@ post_collected_commitments({hash, Hash}, Commitments, #state{ } = State) ->
     case get_block_height_by_hash(Hash, State) of
         {ok, Height} ->
             post_collected_commitments({height, Height}, Commitments, State);
-        {error, not_in_cache} -> State %% TODO: handle forks
+        {error, not_in_cache} ->
+            lager:info("ASDF NOT IIN CACHE?! hash ~p", [Hash]),
+            State %% TODO: handle forks
     end;
 post_collected_commitments({height, Height}, Commitments,
                            #state{ } = State) ->
     case get_block(Height, State) of
         {ok, Block0} ->
             Block = aec_parent_chain_block:set_commitments(Block0, Commitments),
+            lager:info("ASDF INSERTING BACK BLOCK ~p", [Block]),
             insert_block(Block, State);
         {error, _} -> %% old block
+            lager:info("ASDF NOT IIN CACHE?! height: ~p", [Height]),
             State
     end.
 

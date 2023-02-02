@@ -87,7 +87,7 @@ collect_commitments_test_() ->
                         fun(_, _Hash) -> {tx_env, trees} end),
             mock_parent_connector(),
             meck:expect(aec_parent_connector, request_commitments_by_hash,
-                        fun(_) -> [] end),
+                        fun(_BlockHash) -> [] end),
             mock_stakers(),
             mock_events()
      end,
@@ -99,7 +99,8 @@ collect_commitments_test_() ->
             meck:unload(aec_conductor),
             unmock_parent_connector()
      end,
-     [  {"No commitments collected", fun no_commitments_collected/0}
+     [  {"No commitments collected", fun no_commitments_in_cache_if_no_produced/0},
+        {"No commitments collected", fun the_right_commitments_collected/0}
      ]}.
 
 
@@ -264,10 +265,10 @@ no_commitments_before_start() ->
             {ok, #{ child_start_height := StartHeight,
                     top_height         := ParentHeight,
                     child_top_height   := ChildTop0} = _Res} = ?TEST_MODULE:get_state(),
-            [] = get_commitments(?ALICE),
-            [] = get_commitments(?BOB),
-            [] = get_commitments(?CAROL),
-            [] = get_commitments(?DAVE),
+            [] = collect_commitments(?ALICE),
+            [] = collect_commitments(?BOB),
+            [] = collect_commitments(?CAROL),
+            [] = collect_commitments(?DAVE),
             meck:reset(aec_parent_connector),
             ok
         end,
@@ -275,8 +276,101 @@ no_commitments_before_start() ->
     ?TEST_MODULE:stop(),
     ok.
 
-no_commitments_collected() ->
+no_commitments_in_cache_if_no_produced() ->
+    CacheMaxSize = 20,
+    StartHeight = 200,
+    Confirmations = 0,
+    ChildTop = Confirmations,
+    meck:expect(aec_chain, top_height, fun() -> ChildTop end),
+    ParentTop = StartHeight + Confirmations,
+    expect_stakers([?ALICE, ?BOB, ?CAROL]),
+    expect_keys([?ALICE, ?BOB]),
+    set_parent_chain_top(ParentTop),
+    {ok, CachePid} = start_cache(StartHeight, CacheMaxSize, Confirmations, false),
+    %% populate the cache but don't do commitments!
+    mock_commitments_list(all, []),
+    lists:foreach(
+        fun(Idx) ->
+            ParentHeight = ParentTop + Idx,
+            set_parent_chain_top(ParentHeight),
+            ChildTop1 = ChildTop + Idx,
+            meck:reset(aec_parent_connector),
+            child_new_top(CachePid, ChildTop1),
+            Block = block_by_height(ParentHeight),
+            ?TEST_MODULE:post_block(Block),
+            timer:sleep(10),
+            %% ensure that the node is up to date with the parent chain and
+            %% the child chain
+            {ok, #{ child_start_height := StartHeight,
+                    top_height         := ParentHeight,
+                    child_top_height   := ChildTop1}} = ?TEST_MODULE:get_state(),
+            [] = collect_commitments(?ALICE),
+            [] = collect_commitments(?BOB),
+            [] = collect_commitments(?CAROL),
+            [] = collect_commitments(?DAVE),
+            BlockHash = aec_parent_chain_block:hash(Block),
+            timer:sleep(10),
+            {ok, []} = ?TEST_MODULE:get_commitments(BlockHash),
+            ok
+        end,
+        lists:seq(0, 20)),
+    ?TEST_MODULE:stop(),
     ok.
+
+the_right_commitments_collected() ->
+    CacheMaxSize = 20,
+    StartHeight = 200,
+    Confirmations = 0,
+    ChildTop = Confirmations,
+    meck:expect(aec_chain, top_height, fun() -> ChildTop end),
+    ParentTop = StartHeight + Confirmations,
+    expect_stakers([?ALICE, ?BOB, ?CAROL]),
+    expect_keys([?ALICE, ?BOB]),
+    set_parent_chain_top(ParentTop),
+    {ok, CachePid} = start_cache(StartHeight, CacheMaxSize, Confirmations, true),
+    %% populate the cache and start making commitments
+    CommmitmentsInBlocks =
+      maps:from_list(
+        lists:map(
+          fun(H) ->
+            Hash = height_to_hash(H),
+            PrevHash = height_to_hash(H - 1),
+            {Hash, [{?ALICE, PrevHash}, {?BOB, PrevHash}]}
+          end,
+          lists:seq(200, 300))),
+
+    mock_commitments_list(CommmitmentsInBlocks),
+
+    lists:foreach(
+        fun(Idx) ->
+            ParentHeight = ParentTop + Idx,
+            set_parent_chain_top(ParentHeight),
+            ChildTop1 = ChildTop + Idx,
+            meck:reset(aec_parent_connector),
+            child_new_top(CachePid, ChildTop1),
+            Block = block_by_height(ParentHeight),
+            ?TEST_MODULE:post_block(Block),
+            timer:sleep(10),
+            %% ensure that the node is up to date with the parent chain and
+            %% the child chain
+            {ok, #{ child_start_height := StartHeight,
+                    top_height         := ParentHeight,
+                    child_top_height   := ChildTop1}} = ?TEST_MODULE:get_state(),
+            Hash = aeser_api_encoder:encode(key_block_hash, height_to_hash(ChildTop1)),
+            [Hash] = collect_commitments(?ALICE),
+            [Hash] = collect_commitments(?BOB),
+            [] = collect_commitments(?CAROL),
+            [] = collect_commitments(?DAVE),
+            BlockHash = aec_parent_chain_block:hash(Block),
+            timer:sleep(10),
+            ExpectedCommitments = maps:get(BlockHash, CommmitmentsInBlocks),
+            {ok, ExpectedCommitments} = ?TEST_MODULE:get_commitments(BlockHash),
+            ok
+        end,
+        lists:seq(0, 20)),
+    ?TEST_MODULE:stop(),
+    ok.
+
 post_initial_commitments() ->
     CacheMaxSize = 20,
     StartHeight = 200,
@@ -301,10 +395,10 @@ post_initial_commitments() ->
             {ok, #{ child_start_height := StartHeight,
                     top_height         := ParentHeight,
                     child_top_height   := ChildTop0}} = ?TEST_MODULE:get_state(),
-            [GenesisHash] = get_commitments(?ALICE),
-            [GenesisHash] = get_commitments(?BOB),
-            [] = get_commitments(?CAROL),
-            [] = get_commitments(?DAVE),
+            [GenesisHash] = collect_commitments(?ALICE),
+            [GenesisHash] = collect_commitments(?BOB),
+            [] = collect_commitments(?CAROL),
+            [] = collect_commitments(?DAVE),
             meck:reset(aec_parent_connector),
             ok
         end,
@@ -340,10 +434,10 @@ post_commitments() ->
                     top_height         := ParentHeight,
                     child_top_height   := ChildTop1}} = ?TEST_MODULE:get_state(),
             Hash = aeser_api_encoder:encode(key_block_hash, height_to_hash(ChildTop1)),
-            [Hash] = get_commitments(?ALICE),
-            [Hash] = get_commitments(?BOB),
-            [] = get_commitments(?CAROL),
-            [] = get_commitments(?DAVE),
+            [Hash] = collect_commitments(?ALICE),
+            [Hash] = collect_commitments(?BOB),
+            [] = collect_commitments(?CAROL),
+            [] = collect_commitments(?DAVE),
             ok
         end,
         lists:seq(0, 20)),
@@ -377,10 +471,10 @@ no_commitments_if_stopped() ->
             {ok, #{ child_start_height := StartHeight,
                     top_height         := ParentHeight,
                     child_top_height   := ChildTop1}} = ?TEST_MODULE:get_state(),
-            [] = get_commitments(?ALICE),
-            [] = get_commitments(?BOB),
-            [] = get_commitments(?CAROL),
-            [] = get_commitments(?DAVE),
+            [] = collect_commitments(?ALICE),
+            [] = collect_commitments(?BOB),
+            [] = collect_commitments(?CAROL),
+            [] = collect_commitments(?DAVE),
             ok
         end,
         lists:seq(0, 20)),
@@ -415,10 +509,10 @@ block_production_dictates_commitments() ->
                     top_height         := ParentHeight,
                     child_top_height   := ChildTop1}} = ?TEST_MODULE:get_state(),
             Hash = aeser_api_encoder:encode(key_block_hash, height_to_hash(ChildTop1)),
-            [Hash] = get_commitments(?ALICE),
-            [Hash] = get_commitments(?BOB),
-            [] = get_commitments(?CAROL),
-            [] = get_commitments(?DAVE),
+            [Hash] = collect_commitments(?ALICE),
+            [Hash] = collect_commitments(?BOB),
+            [] = collect_commitments(?CAROL),
+            [] = collect_commitments(?DAVE),
             ok
         end,
         lists:seq(0, 20)),
@@ -440,10 +534,10 @@ block_production_dictates_commitments() ->
             {ok, #{ child_start_height := StartHeight,
                     top_height         := ParentHeight,
                     child_top_height   := _ChildTop1}} = ?TEST_MODULE:get_state(),
-            [] = get_commitments(?ALICE),
-            [] = get_commitments(?BOB),
-            [] = get_commitments(?CAROL),
-            [] = get_commitments(?DAVE),
+            [] = collect_commitments(?ALICE),
+            [] = collect_commitments(?BOB),
+            [] = collect_commitments(?CAROL),
+            [] = collect_commitments(?DAVE),
             ok
         end,
         lists:seq(0, 20)),
@@ -466,10 +560,10 @@ block_production_dictates_commitments() ->
                     top_height         := ParentHeight,
                     child_top_height   := ChildTop1}} = ?TEST_MODULE:get_state(),
             Hash = aeser_api_encoder:encode(key_block_hash, height_to_hash(ChildTop1)),
-            [Hash] = get_commitments(?ALICE),
-            [Hash] = get_commitments(?BOB),
-            [] = get_commitments(?CAROL),
-            [] = get_commitments(?DAVE),
+            [Hash] = collect_commitments(?ALICE),
+            [Hash] = collect_commitments(?BOB),
+            [] = collect_commitments(?CAROL),
+            [] = collect_commitments(?DAVE),
             ok
         end,
         lists:seq(0, 20)),
@@ -620,7 +714,7 @@ assert_child_cache_consistency(#{ child_start_height := StartHeight,
         lists:seq(CacheExpectedEnd, CacheExpectedEnd)),
     ok.
 
-get_commitments(Staker) ->
+collect_commitments(Staker) ->
     AllCommitments =
         lists:filter(
             fun({_Pid, {_M, _F, [Who, _Hash]}, _Res}) ->
@@ -638,3 +732,18 @@ filter_meck_events(Module, Function) ->
         end,
         meck:history(Module)).
 
+mock_commitments_list(BlockHashesMap) ->
+    meck:expect(aec_parent_connector, request_commitments_by_hash,
+            fun(BlockHash) ->
+                spawn(fun() ->
+                        ?TEST_MODULE:post_collected_commitments(BlockHash, maps:get(BlockHash, BlockHashesMap))
+                      end)
+            end).
+
+mock_commitments_list(all, L) ->
+    meck:expect(aec_parent_connector, request_commitments_by_hash,
+            fun(BlockHash) ->
+                spawn(fun() ->
+                        ?TEST_MODULE:post_collected_commitments(BlockHash, L)
+                      end)
+            end).

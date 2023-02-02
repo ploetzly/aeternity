@@ -390,15 +390,16 @@ handle_fetch_commitments_(FunName, Arg,
     %% Parallel fetch commitment from all configured parent chain nodes
     FetchFun =
         fun(#{host := Host, port := Port,
-              user := User, password := Password} ) ->
+              user := User, password := Password} = Node) ->
             case apply(Mod, FunName, [Host, Port, User, Password, Seed, Arg, Receiver]) of
-                {ok, _Txs}  = OK -> OK;
+                {ok, Txs} ->
+                    {ok, {Node, Txs}};
                 {error, _Reason} = Err -> Err
             end
         end,
     {Good, Errors} = aeu_lib:pmap(FetchFun, ParentNodes, 10000),
     case responses_consensus(Good, Errors, length(ParentNodes)) of
-        {ok, Txs, _} -> {ok, Txs};
+        {ok, _Node, Txs} -> {ok, Txs};
         {error, not_found} -> {error, not_found};
         {error, no_parent_chain_agreement} = Err ->
             %% TODO: decide what to do: this is likely happening because of
