@@ -77,36 +77,20 @@
 -export([ fold_mempool/2
         ]).
 
--export([ state_tab/1
+%% GC-related
+-export([ gced_tables/0
+        , state_tab/1
         , make_primary_state_tab/2
-        , secondary_state_tab/1 ]).
+        , secondary_state_tab/1
+        , write_last_gc_switch/1
+        , read_last_gc_switch/0 ]).
 
 %% MP trees backend
--export([ find_accounts_node/1
-        , find_calls_node/1
-        , find_channels_node/1
-        , find_contracts_node/1
-        , find_ns_node/1
-        , find_ns_cache_node/1
-        , find_oracles_node/1
-        , find_oracles_cache_node/1
-        , dirty_find_accounts_node/1
-        , dirty_find_calls_node/1
-        , dirty_find_channels_node/1
-        , dirty_find_contracts_node/1
-        , dirty_find_ns_node/1
-        , dirty_find_ns_cache_node/1
-        , dirty_find_oracles_node/1
-        , dirty_find_oracles_cache_node/1
-        , write_accounts_node/2
-        , write_accounts_node/3
-        , write_calls_node/2
-        , write_channels_node/2
-        , write_contracts_node/2
-        , write_ns_node/2
-        , write_ns_cache_node/2
-        , write_oracles_node/2
-        , write_oracles_cache_node/2
+-export([ tree_table_name/1
+        , new_tree_context/2
+        , lookup_tree_node/2
+        , enter_tree_node/3
+        , node_is_in_primary/2
         ]).
 
 -export([ find_block_state/1
@@ -197,6 +181,32 @@
 -define(TX_IN_MEMPOOL, []).
 -define(PERSIST, true).
 
+%% As table names are to some extent dynamic, it's cumbersome to
+%% define a very specific type.
+-type table_name() :: atom().
+
+%% With tree names, we do have a specific type.
+%% This should be enough for Dialyzer to determine if we're mixing
+%% tree names and table names.
+-type tree_name() :: aec_trees:tree_name().
+
+-record(tree, { table              :: atom()
+              , mode = transaction :: dirty | transaction
+            }).
+
+-record(tree_gc, { primary            :: atom()
+                 , secondary          :: atom()
+                 , record             :: atom()
+                 , mode = transaction :: atom()
+                }).
+-type tree_context() :: #tree{} | #tree_gc{}.
+-type value() :: aeu_mp_trees:value().
+-type hash() :: aeu_mp_trees:key().
+
+-type gc_table_spec() :: #{ tree := tree_name()
+                          , copies := [table_name()] }.
+-type map_of_gced_tables() :: #{ table_name() := gc_table_spec() }.
+
 tables(Mode0) ->
     Mode = expand_mode(Mode0),
     Ts = tables_(Mode),
@@ -230,7 +240,8 @@ add_gc_extra_tabs(Tabs) ->
 
 maybe_add_gc_tab({Tab, Spec0} = Entry, Acc) ->
     case maps:get(Tab, gced_tables(), undefined) of
-        #{copies := Tabs} when is_list(Tabs) ->
+        #{copies := Cs} when is_list(Cs) ->
+            Tabs = [Tab|Cs],
             Spec = ensure_record_name(Tab, Spec0),
             [{T, note_other_tabs(Tabs -- [T], Spec)} || T <- Tabs] ++ Acc;
         undefined -> [Entry | Acc]
@@ -244,8 +255,66 @@ ensure_record_name(T, Spec) ->
             [{record_name, T}|Spec]
     end.
 
+%% Some mapping code for TreeName -> TableName.
+%% For users of state trees, we want the API functions (with a few exceptions)
+%% to take the tree name (as in aec_trees:tree_name()). This module then needs to
+%% keep track of whether GC is enabled, and if so, which physical table is the
+%% current primary.
+%% The main exception is the make_primary_state_tab/2 function, called by
+%% the aec_db_gc module.
+%%
+%% An unfortunate legacy artifact is that the tree name oracles_cache is fixed
+%% in the serialization API, whereas the DB tables name is aec_oracle_cache.
+%% outside the aec_db module, it's always oracles_cache.
+%%
+-spec tree_table_name(binary() | table_name()) -> table_name().
+tree_table_name(T) when is_atom(T) ->
+    tree_table_name_a(T);
+tree_table_name(T) when is_list(T); is_binary(T) ->
+    tree_table_name_s(T).
+
+tree_table_name_s(Tree) ->
+    S = to_binary(Tree),
+    case S of
+        <<"accounts">>      -> aec_account_state;
+        <<"calls">>         -> aec_call_state;
+        <<"channels">>      -> aec_channel_state;
+        <<"contracts">>     -> aec_contract_state;
+        <<"ns">>            -> aec_name_service_state;
+        <<"ns_cache">>      -> aec_name_service_cache;
+        <<"oracles">>       -> aec_oracle_state;
+        <<"oracles_cache">> -> aec_oracle_cache
+    end.
+
+-spec tree_table_name_a(tree_name()) -> table_name().
+tree_table_name_a(A) ->
+    case A of
+        accounts      -> aec_account_state;
+        calls         -> aec_call_state;
+        channels      -> aec_channel_state;
+        contracts     -> aec_contract_state;
+        ns            -> aec_name_service_state;
+        ns_cache      -> aec_name_service_cache;
+        oracles       -> aec_oracle_state;
+        oracles_cache -> aec_oracle_cache
+    end.
+
+to_binary(B) when is_binary(B) -> B;
+to_binary(L) when is_list(L)   -> iolist_to_binary(L).
+
+%% We do not duplicate the canonical table name in the 'copies'
+-spec gced_tables() -> map_of_gced_tables().
 gced_tables() ->
-    #{aec_account_state => #{copies => [aec_account_state, aec_account_state_1]}}.
+    #{
+       aec_account_state      => #{tree => accounts , copies => [aec_account_state_1]}
+     , aec_call_state         => #{tree => calls    , copies => [aec_call_state_1]}
+     , aec_channel_state      => #{tree => channels , copies => [aec_channel_state_1]}
+     , aec_contract_state     => #{tree => contracts, copies => [aec_contract_state_1]}
+     , aec_name_service_state => #{tree => ns       , copies => [aec_name_service_state_1]}
+     , aec_name_service_cache => #{tree => ns_cache , copies => [aec_name_service_cache_1]}
+     , aec_oracle_state       => #{tree => oracles  , copies => [aec_oracle_state_1]}
+     , aec_oracle_cache       => #{tree => oracles_cache, copies => [aec_oracle_cache_1]}
+     }.
 
 note_other_tabs(Ts, Props) ->
     UPs = proplists:get_value(user_properties, Props, []),
@@ -832,76 +901,81 @@ write_block_state(Hash, Trees, AccDifficulty, ForkId, Fees, Fraud) ->
            write(BlockState)
        end).
 
+-spec state_tab(tree_name()) -> table_name().
 state_tab(T) ->
     persistent_term:get({primary_state_tab, T}, T).
 
-secondary_state_tab(T) ->
-    Prim = persistent_term:get({primary_state_tab, T}),
-    #{copies := Tabs} = maps:get(T, gced_tables()),
-    [Secondary] = Tabs -- [Prim],
+-spec secondary_state_tab(tree_name()) -> table_name().
+secondary_state_tab(Tree) ->
+    Tab = tree_table_name(Tree),
+    Prim = persistent_term:get({primary_state_tab, Tree}),
+    secondary_state_tab_(Tab, Prim).
+
+secondary_state_tab_(Tab, Prim) ->
+    #{copies := Cs} = maps:get(Tab, gced_tables()),
+    [Secondary] = [Tab|Cs] -- [Prim],
     Secondary.
 
-make_primary_state_tab(T, P) ->
-    lager:debug("New primary for ~p: ~p", [T, P]),
-    case maps:find(T, gced_tables()) of
+-spec gc_enabled(tree_name()) -> false | {true, {table_name(), table_name()}}.
+gc_enabled(Tree) ->
+    case persistent_term:get({primary_state_tab, Tree}, undefined) of
+        undefined ->
+            false;
+        Prim ->
+            Tab = tree_table_name(Tree),
+            {true, {Prim, secondary_state_tab_(Tab, Prim)}}
+    end.
+
+write_last_gc_switch(Height) ->
+    lager:debug("Last GC height: ~p", [Height]),
+    ?t(write(#aec_chain_state{key = last_gc_switch, value = Height})).
+
+read_last_gc_switch() ->
+    R = ?t(case read(aec_chain_state, last_gc_switch) of
+               [] ->
+                   0;
+               [#aec_chain_state{value = Height}] ->
+                   Height
+           end),
+    lager:debug("<-- last GC Height: ~p", [R]),
+    R.
+
+-spec make_primary_state_tab(tree_name(), table_name()) -> ok.
+make_primary_state_tab(Tree, P) ->
+    lager:debug("New primary for ~p: ~p", [Tree, P]),
+    Tab = tree_table_name(Tree),
+    case maps:find(Tab, gced_tables()) of
         {ok, #{copies := Tabs}} ->
-            case lists:member(P, Tabs) of
+            case P =:= Tab orelse lists:member(P, Tabs) of
                 true ->
-                    ?t(write(#aec_chain_state{key = {primary_state_tab, T}, value = P}));
+                    ?t(write(#aec_chain_state{key = {primary_state_tab, Tree}, value = P}));
                 false ->
-                    error({not_a_state_tab_candidate, {T, P}})
+                    error({not_a_state_tab_candidate, {Tree, P}})
             end,
-            cache_primary_state_tab(T, P);
+            cache_primary_state_tab(Tree, P);
         error ->
-            error({not_a_gced_state_tab, T})
+            error({not_a_gced_state_tab, Tree})
     end.
 
 cache_primary_state_tabs() ->
     lager:debug("Caching primary for gced tabs", []),
     maps:fold(
-      fun(T, #{copies := Ts}, _) ->
-              Key = {primary_state_tab, T},
+      fun(T, #{tree := Tree, copies := _}, _) ->
+              Key = {primary_state_tab, Tree},
               case dirty_get_chain_state_value(Key) of
                   undefined ->
-                      P = hd(Ts),
-                      ?t(write(#aec_chain_state{key = Key, value = P})),
-                      cache_primary_state_tab(T, P);
+                      ?t(write(#aec_chain_state{key = Key, value = T})),
+                      cache_primary_state_tab(Tree, T);
                   P ->
                       cache_primary_state_tab(T, P)
               end,
               ok
       end, ok, gced_tables()).
 
+-spec cache_primary_state_tab(tree_name(), table_name()) -> ok.
 cache_primary_state_tab(T, P) ->
     lager:debug("Caching primary for ~p: ~p", [T, P]),
     persistent_term:put({primary_state_tab, T}, P).
-
-write_accounts_node(Hash, Node) ->
-    ?t(write(state_tab(aec_account_state), #aec_account_state{key = Hash, value = Node}, write)).
-
-write_accounts_node(Table, Hash, Node) ->
-    ?t(write(Table, #aec_account_state{key = Hash, value = Node}, write)).
-
-write_calls_node(Hash, Node) ->
-    ?t(write(#aec_call_state{key = Hash, value = Node})).
-
-write_channels_node(Hash, Node) ->
-    ?t(write(#aec_channel_state{key = Hash, value = Node})).
-
-write_contracts_node(Hash, Node) ->
-    ?t(write(#aec_contract_state{key = Hash, value = Node})).
-
-write_ns_node(Hash, Node) ->
-    ?t(write(#aec_name_service_state{key = Hash, value = Node})).
-
-write_ns_cache_node(Hash, Node) ->
-    ?t(write(#aec_name_service_cache{key = Hash, value = Node})).
-
-write_oracles_node(Hash, Node) ->
-    ?t(write(#aec_oracle_state{key = Hash, value = Node})).
-
-write_oracles_cache_node(Hash, Node) ->
-    ?t(write(#aec_oracle_cache{key = Hash, value = Node})).
 
 write_genesis_hash(Hash) when is_binary(Hash) ->
     ?t(write(#aec_chain_state{key = genesis_hash, value = Hash})).
@@ -1082,101 +1156,110 @@ find_block_state_and_data(Hash, DirtyBackend) ->
         [] -> none
     end.
 
-find_oracles_node(Hash) ->
-    case ?t(read(aec_oracle_state, Hash)) of
-        [#aec_oracle_state{value = Node}] -> {value, Node};
-        [] -> none
+new_tree_context(Mode, Tree) when Mode == dirty;
+                                  Mode == transaction ->
+    ActivityType = case Mode of
+                       dirty -> async_dirty;
+                       transaction -> transaction
+                   end,
+    Res = case gc_enabled(Tree) of
+              {true, {Primary, Secondary}} ->
+                  Record = mnesia:table_info(Primary, record_name),
+                  #tree_gc{ primary   = Primary
+                          , secondary = Secondary
+                          , record    = Record
+                          , mode      = ActivityType };
+              false ->
+                  Tab = tree_table_name(Tree),
+                  #tree{ table = Tab
+                       , mode  = ActivityType }
+          end,
+    Res.
+
+%% Behaves like gb_trees:lookup(Key, Tree).
+-spec lookup_tree_node(hash(), tree_context()) -> none | {value, value()}.
+lookup_tree_node(Hash, #tree{table = T, mode = ActivityType}) ->
+    ensure_activity(ActivityType,
+                    fun() ->
+                            lookup_tree_node_(Hash, T, T)
+                    end);
+lookup_tree_node(Hash, #tree_gc{ primary   = Prim
+                               , secondary = Sec
+                               , record    = Rec
+                               , mode      = ActivityType }) ->
+    ensure_activity(ActivityType,
+                    fun() ->
+                            case lookup_tree_node_(Hash, Prim, Rec) of
+                                {value, _} = Res ->
+                                    Res;
+                                none ->
+                                    case lookup_tree_node_(Hash, Sec, Rec) of
+                                        none ->
+                                            none;
+                                        {value, V} = Res ->
+                                            promote_tree_node(Hash, V, Prim, Rec),
+                                            Res
+                                    end
+                            end
+                    end).
+
+lookup_tree_node_(Hash, T, Rec) ->
+    case read(T, Hash) of
+        [Obj] -> {value, get_tree_value(Rec, Obj)};
+        []    -> none
     end.
 
-dirty_find_oracles_node(Hash) ->
-    case ?dirty_dirty_read(aec_oracle_state, Hash) of
-        [#aec_oracle_state{value = Node}] -> {value, Node};
-        [] -> none
-    end.
+get_tree_value(Rec, {Rec, _, Value}) ->
+    Value.
 
-find_oracles_cache_node(Hash) ->
-    case ?t(read(aec_oracle_cache, Hash)) of
-        [#aec_oracle_cache{value = Node}] -> {value, Node};
-        [] -> none
-    end.
+node_is_in_primary(Hash, #tree_gc{ primary = Prim
+                                 , mode = ActivityType }) ->
+    ensure_activity(ActivityType,
+                    fun() ->
+                            case read(Prim, Hash) of
+                                [_] ->
+                                    true;
+                                [] ->
+                                    false
+                            end
+                    end).
 
-dirty_find_oracles_cache_node(Hash) ->
-    case ?dirty_dirty_read(aec_oracle_cache, Hash) of
-        [#aec_oracle_cache{value = Node}] -> {value, Node};
-        [] -> none
-    end.
+%% Behaves similary to gb_trees:enter(Key, Value, Tree) (but different return value)
+-spec enter_tree_node(hash(), binary(), tree_context()) -> ok.
+enter_tree_node(Hash, Value, #tree{table = T, mode = ActivityType}) ->
+    ensure_activity(ActivityType,
+                    fun() ->
+                            enter_tree_node_(Hash, Value, T, T)
+                    end);
+enter_tree_node(Hash, Value, #tree_gc{ primary = Prim
+                                     , record  = Rec
+                                     , mode    = ActivityType }) ->
+    ensure_activity(ActivityType,
+                    fun() ->
+                            enter_tree_node_(Hash, Value, Prim, Rec)
+                    end).
 
-find_calls_node(Hash) ->
-    case ?t(read(aec_call_state, Hash)) of
-        [#aec_call_state{value = Node}] -> {value, Node};
-        [] -> none
-    end.
+enter_tree_node_(Hash, Value, Tab, Rec) ->
+    Obj = mk_record(Rec, Hash, Value),
+    ?t(write(Tab, Obj, write)).
 
-dirty_find_calls_node(Hash) ->
-    case ?dirty_dirty_read(aec_call_state, Hash) of
-        [#aec_call_state{value = Node}] -> {value, Node};
-        [] -> none
-    end.
+%% Promotion is always dirty. For one thing, we don't want to ever roll back,
+%% and the data is immutable anyway.
+promote_tree_node(Hash, Value, Tab, Rec) ->
+    Obj = mk_record(Rec, Hash, Value),
+    activity(async_dirty, fun() ->
+                                  write(Tab, Obj, write)
+                          end).
 
-find_channels_node(Hash) ->
-    case ?t(read(aec_channel_state, Hash)) of
-        [#aec_channel_state{value = Node}] -> {value, Node};
-        [] -> none
-    end.
+mk_record(aec_account_state     , K, V) -> #aec_account_state{key = K, value = V};
+mk_record(aec_call_state        , K, V) -> #aec_call_state{key = K, value = V};
+mk_record(aec_channel_state     , K, V) -> #aec_channel_state{key = K, value = V};
+mk_record(aec_contract_state    , K, V) -> #aec_contract_state{key = K, value = V};
+mk_record(aec_name_service_state, K, V) -> #aec_name_service_state{key = K, value = V};
+mk_record(aec_name_service_cache, K, V) -> #aec_name_service_cache{key = K, value = V};
+mk_record(aec_oracle_state      , K, V) -> #aec_oracle_state{key = K, value = V};
+mk_record(aec_oracle_cache      , K, V) -> #aec_oracle_cache{key = K, value = V}.
 
-dirty_find_channels_node(Hash) ->
-    case ?dirty_dirty_read(aec_channel_state, Hash) of
-        [#aec_channel_state{value = Node}] -> {value, Node};
-        [] -> none
-    end.
-
-find_contracts_node(Hash) ->
-    case ?t(read(aec_contract_state, Hash)) of
-        [#aec_contract_state{value = Node}] -> {value, Node};
-        [] -> none
-    end.
-
-dirty_find_contracts_node(Hash) ->
-    case ?dirty_dirty_read(aec_contract_state, Hash) of
-        [#aec_contract_state{value = Node}] -> {value, Node};
-        [] -> none
-    end.
-
-find_ns_node(Hash) ->
-    case ?t(read(aec_name_service_state, Hash)) of
-        [#aec_name_service_state{value = Node}] -> {value, Node};
-        [] -> none
-    end.
-
-dirty_find_ns_node(Hash) ->
-    case ?dirty_dirty_read(aec_name_service_state, Hash) of
-        [#aec_name_service_state{value = Node}] -> {value, Node};
-        [] -> none
-    end.
-
-find_ns_cache_node(Hash) ->
-    case ?t(read(aec_name_service_cache, Hash)) of
-        [#aec_name_service_cache{value = Node}] -> {value, Node};
-        [] -> none
-    end.
-
-dirty_find_ns_cache_node(Hash) ->
-    case ?dirty_dirty_read(aec_name_service_cache, Hash) of
-        [#aec_name_service_cache{value = Node}] -> {value, Node};
-        [] -> none
-    end.
-
-find_accounts_node(Hash) ->
-    case ?t(read(state_tab(aec_account_state), Hash)) of
-        [#aec_account_state{value = Node}] -> {value, Node};
-        [] -> none
-    end.
-
-dirty_find_accounts_node(Hash) ->
-    case ?dirty_dirty_read(state_tab(aec_account_state), Hash) of
-        [#aec_account_state{value = Node}] -> {value, Node};
-        [] -> none
-    end.
 
 get_chain_state_value(Key) ->
     ?t(case read(aec_chain_state, Key) of
