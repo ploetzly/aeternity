@@ -306,14 +306,22 @@ generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := _E
     case aec_parent_chain_cache:get_block_by_height(PCHeight) of
         {ok, Block} ->
             Hash = aec_parent_chain_block:hash(Block),
-            ParentHash = binary_to_list(Hash),
+            {ok, Commitments} = aec_parent_chain_block:commitments(Block),
+            CommitmentsSophia = encode_commtiments(Block),
             {TxEnv0, Trees} = aetx_env:tx_env_and_trees_from_top(aetx_transaction),
             Height0 = aetx_env:height(TxEnv0),
             Height = Height0 + 1,
+            lager:info("ASDF Parent Block ~p", [Block]),
+%            lager:info("ASDF Commitments Enc ~p", [CommitmentsSophia]),
+            lager:info("ASDF Height ~p PrevHash ~p",
+                       [Height0, aeser_api_encoder:encode(key_block_hash,
+                         aec_headers:prev_key_hash(Candidate))]),
+            ParentHash = binary_to_list(Hash),
             TxEnv = aetx_env:set_height(TxEnv0, Height),
             {ok, CD} = aeb_fate_abi:create_calldata("elect_at_height",
                                                     [aefa_fate_code:encode_arg({integer, Height}),
-                                                    aefa_fate_code:encode_arg({string, list_to_binary(ParentHash)})]),
+                                                    aefa_fate_code:encode_arg({string, list_to_binary(ParentHash)}),
+                                                    CommitmentsSophia]),
             CallData = aeser_api_encoder:encode(contract_bytearray, CD),
             {ok, _Trees1, Call} = call_consensus_contract_(?ELECTION_CONTRACT,
                                                            TxEnv, Trees,
@@ -352,9 +360,11 @@ set_key_block_seal(KeyBlock0, Seal) ->
     Hash = aec_parent_chain_block:hash(Block),
     ParentHash = binary_to_list(Hash),
     TxEnv = aetx_env:set_height(TxEnv0, Height),
+    CommitmentsSophia = encode_commtiments(Block),
     {ok, CD} = aeb_fate_abi:create_calldata("elect_at_height",
                                             [aefa_fate_code:encode_arg({integer, Height}),
-                                            aefa_fate_code:encode_arg({string, list_to_binary(ParentHash)})]),
+                                            aefa_fate_code:encode_arg({string, list_to_binary(ParentHash)}),
+                                            CommitmentsSophia]),
     CallData = aeser_api_encoder:encode(contract_bytearray, CD),
     {ok, _Trees1, Call} = call_consensus_contract_(?ELECTION_CONTRACT,
                                                     TxEnv, Trees,
@@ -552,11 +562,13 @@ next_beneficiary() ->
     case aec_parent_chain_cache:get_block_by_height(PCHeight) of
         {ok, Block} ->
             Hash = aec_parent_chain_block:hash(Block),
+            CommitmentsSophia = encode_commtiments(Block),
             ParentHash = binary_to_list(Hash),
             TxEnv = aetx_env:set_height(TxEnv0, Height),
             {ok, CD} = aeb_fate_abi:create_calldata("elect_at_height",
                                                     [aefa_fate_code:encode_arg({integer, Height}),
-                                                    aefa_fate_code:encode_arg({string, list_to_binary(ParentHash)})]),
+                                                    aefa_fate_code:encode_arg({string, list_to_binary(ParentHash)}),
+                                                    CommitmentsSophia]),
             CallData = aeser_api_encoder:encode(contract_bytearray, CD),
             {ok, _Trees1, Call} = call_consensus_contract_(?ELECTION_CONTRACT,
                                                             TxEnv, Trees,
@@ -699,3 +711,16 @@ seal_padding_size() ->
 
 pc_height(ChildHeight) ->
     ChildHeight + pc_start_height() - 1.%% child starts pinning from height 1, not genesis
+
+encode_commtiments(Block) ->
+    {ok, Commitments} = aec_parent_chain_block:commitments(Block),
+    Commitments1 =
+        lists:foldl(
+            fun({Delegate, Commitment}, Accum) ->
+                maps:update_with(Commitment, fun(Ds) -> [Delegate | Ds] end,
+                                 [Delegate], Accum)
+            end,
+            #{},
+            Commitments),
+    CommitmentsSophia =
+        aeb_fate_data:make_map(Commitments1).

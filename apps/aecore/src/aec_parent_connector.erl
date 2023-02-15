@@ -35,13 +35,9 @@
          request_block_by_hash/1,
          request_block_by_height/1,
          request_top/0,
-         request_commitments_by_hash/1,
-         request_commitments_by_height/1,
          %% blocking getting of blocks
          fetch_block_by_hash/1,
          fetch_block_by_height/1,
-         fetch_commitments_by_hash/1,
-         fetch_commitments_by_height/1,
 
          post_commitment/2
         ]).
@@ -119,12 +115,6 @@ request_block_by_height(Height) ->
 request_top() ->
     ?SERVER ! check_parent.
 
-request_commitments_by_hash(Hash) ->
-    gen_server:cast(?SERVER, {request_commitments_by_hash, Hash}).
-
-request_commitments_by_height(Height) ->
-    gen_server:cast(?SERVER, {request_commitments_by_height, Height}).
-
 %% this blocks the caller process, use with caution
 -spec fetch_block_by_hash(binary()) -> {ok, aec_parent_chain_block:block()}
                                      | {error, not_found | no_parent_chain_agreement}.
@@ -136,18 +126,6 @@ fetch_block_by_hash(Hash) ->
                                                 | {error, not_found | no_parent_chain_agreement}.
 fetch_block_by_height(Height) ->
     gen_server:call(?SERVER, {fetch_block_by_height, Height}).
-
-%% this commitmentss the caller process, use with caution
--spec fetch_commitments_by_hash(binary()) -> {ok, aec_parent_chain_block:commitments()}
-                                     | {error, not_found | no_parent_chain_agreement}.
-fetch_commitments_by_hash(Hash) ->
-    gen_server:call(?SERVER, {fetch_commitments_by_hash, Hash}).
-
-%% this commitmentss the caller process, use with caution
--spec fetch_commitments_by_height(non_neg_integer()) -> {ok, aec_parent_chain_block:commitments()}
-                                                | {error, not_found | no_parent_chain_agreement}.
-fetch_commitments_by_height(Height) ->
-    gen_server:call(?SERVER, {fetch_commitments_by_height, Height}).
 
 post_commitment(Who, Hash) ->
     gen_server:call(?SERVER, {post_commitment, Who, Hash}).
@@ -180,16 +158,10 @@ handle_call(trigger_fetch, _From, State) ->
     Reply = ok,
     {reply, Reply, State};
 handle_call({fetch_block_by_hash, Hash}, _From, State) ->
-    Reply = handle_fetch_block(fun fetch_block_by_hash/4, Hash, State),
+    Reply = handle_fetch_block(fun fetch_block_by_hash/5, Hash, State),
     {reply, Reply, State};
 handle_call({fetch_block_by_height, Height}, _From, State) ->
-    Reply = handle_fetch_block(fun fetch_block_by_height/4, Height, State),
-    {reply, Reply, State};
-handle_call({fetch_commitments_by_hash, Hash}, _From, State) ->
-    Reply = handle_fetch_commitments_by_hash(Hash, State),
-    {reply, Reply, State};
-handle_call({fetch_commitments_by_height, Height}, _From, State) ->
-    Reply = handle_fetch_commitments_by_height(Height, State),
+    Reply = handle_fetch_block(fun fetch_block_by_height/5, Height, State),
     {reply, Reply, State};
 handle_call({post_commitment, Who, Hash}, _From, State) ->
     Reply = post_commitment(Who, Hash, State),
@@ -200,31 +172,17 @@ handle_call(_Request, _From, State) ->
 
 -spec handle_cast(any(), state()) -> {noreply, state()}.
 handle_cast({request_block_by_hash, Hash}, State) ->
-    case handle_fetch_block(fun fetch_block_by_hash/4, Hash, State) of
+    case handle_fetch_block(fun fetch_block_by_hash/5, Hash, State) of
         {ok, Block} -> aec_parent_chain_cache:post_block(Block);
         {error, not_found} -> pass;
         {error, no_parent_chain_agreement} -> pass
     end,
     {noreply, State};
 handle_cast({request_block_by_height, Height}, State) ->
-    case handle_fetch_block(fun fetch_block_by_height/4, Height, State) of
+    case handle_fetch_block(fun fetch_block_by_height/5, Height, State) of
         {ok, Block} -> aec_parent_chain_cache:post_block(Block);
         {error, not_found} -> pass;
         {error, no_parent_chain_agreement} -> pass
-    end,
-    {noreply, State};
-handle_cast({request_commitments_by_hash, Hash}, State) ->
-    case handle_fetch_commitments_by_hash(Hash, State) of
-        {ok, Txs} ->
-            aec_parent_chain_cache:post_collected_commitments(Hash, Txs);
-        {error, _} -> pass
-    end,
-    {noreply, State};
-handle_cast({request_commitments_by_height, Height}, State) ->
-    case handle_fetch_commitments_by_height(Height, State) of
-        {ok, Txs} ->
-            aec_parent_chain_cache:post_collected_commitments_by_height(Height, Txs);
-        {error, _} -> pass
     end,
     {noreply, State}.
 
@@ -236,7 +194,7 @@ handle_info(check_parent, #state{parent_hosts = ParentNodes,
                                 rpc_seed = Seed} = State) ->
     %% Parallel fetch top block from all configured parent chain nodes
     ParentTop1 =
-        case fetch_parent_tops(Mod, ParentNodes, Seed) of
+        case fetch_parent_tops(Mod, ParentNodes, Seed, State) of
             {ok, ParentTop, _} ->
                 %% No change, just check again later
                 ParentTop;
@@ -278,39 +236,49 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-fetch_parent_tops(Mod, ParentNodes, Seed) ->
+fetch_parent_tops(Mod, ParentNodes, Seed, State) ->
     FetchFun =
         fun(Host, Port, User, Password) ->
             Mod:get_latest_block(Host, Port, User, Password, Seed)
         end,
-    Fun = fun(Parent) -> fetch_block(FetchFun, Parent) end,
+    Fun = fun(Parent) -> fetch_block(FetchFun, Parent, State) end,
     {Good, Errors} = aeu_lib:pmap(Fun, ParentNodes, 10000),
     responses_consensus(Good, Errors, length(ParentNodes)).
 
-fetch_block_by_hash(Hash, Mod, ParentNodes, Seed) ->
+fetch_block_by_hash(Hash, Mod, ParentNodes, Seed, State) ->
     FetchFun =
         fun(Host, Port, User, Password) ->
             Mod:get_header_by_hash(Hash, Host, Port, User, Password, Seed)
         end,
-    Fun = fun(Parent) -> fetch_block(FetchFun, Parent) end,
+    Fun = fun(Parent) -> fetch_block(FetchFun, Parent, State) end,
     {Good, Errors} = aeu_lib:pmap(Fun, ParentNodes, 10000),
     responses_consensus(Good, Errors, length(ParentNodes)).
 
-fetch_block_by_height(Height, Mod, ParentNodes, Seed) ->
+fetch_block_by_height(Height, Mod, ParentNodes, Seed, State) ->
     FetchFun =
         fun(Host, Port, User, Password) ->
             Mod:get_header_by_height(Height, Host, Port, User, Password, Seed)
         end,
-    Fun = fun(Parent) -> fetch_block(FetchFun, Parent) end,
+    Fun = fun(Parent) -> fetch_block(FetchFun, Parent, State) end,
     {Good, Errors} = aeu_lib:pmap(Fun, ParentNodes, 10000),
     responses_consensus(Good, Errors, length(ParentNodes)).
 
-fetch_block(FetchFun, #{host := Host, port := Port,
-                        user := User, password := Password} = Node) ->
+fetch_block(FetchFun,
+            #{host := Host, port := Port,
+              user := User, password := Password} = Node,
+            #state{parent_conn_mod = Mod,
+                   rpc_seed = Seed,
+                   c_details = CDetails}) ->
+    #commitment_details{recipient = Receiver} = CDetails,
     case FetchFun(Host, Port, User, Password) of
         {ok, BlockHash, PrevHash, Height} ->
-            Top = aec_parent_chain_block:new(BlockHash, Height, PrevHash),
-            {ok, {Top, Node}};
+            Block = aec_parent_chain_block:new(BlockHash, Height, PrevHash),
+            case Mod:get_commitment_tx_in_block(Host, Port, User, Password, Seed, BlockHash,
+                           PrevHash, Receiver) of
+                {ok, Commitments} ->
+                    {ok, {aec_parent_chain_block:set_commitments(Block, Commitments), Node}};
+                {error, _} = Err -> Err
+            end;
         Err ->
             Err
     end.
@@ -363,9 +331,9 @@ increment_seed(Bin) when is_binary(Bin) ->
 handle_fetch_block(Fun, Arg,
             #state{ parent_hosts = ParentNodes,
                     parent_conn_mod = Mod,
-                    rpc_seed = Seed}) ->
+                    rpc_seed = Seed} = State) ->
     %% Parallel fetch top block from all configured parent chain nodes
-    case Fun(Arg, Mod, ParentNodes, Seed) of
+    case Fun(Arg, Mod, ParentNodes, Seed, State) of
         {ok, Block, _} -> {ok, Block};
         {error, not_found} -> {error, not_found};
         {error, no_parent_chain_agreement} = Err ->
@@ -374,40 +342,6 @@ handle_fetch_block(Fun, Arg,
             lager:warning("Parent nodes are unable to reach consensus", []),
             Err
     end.
-
-handle_fetch_commitments_by_hash(Hash, State) ->
-    handle_fetch_commitments_(get_commitment_tx_in_block, Hash, State).
-
-handle_fetch_commitments_by_height(Height, State) ->
-    handle_fetch_commitments_(get_commitment_tx_at_height, Height, State).
-
-handle_fetch_commitments_(FunName, Arg,
-                          #state{ parent_hosts = ParentNodes,
-                                  parent_conn_mod = Mod,
-                                  rpc_seed = Seed,
-                                  c_details = CDetails}) ->
-    #commitment_details{recipient = Receiver} = CDetails,
-    %% Parallel fetch commitment from all configured parent chain nodes
-    FetchFun =
-        fun(#{host := Host, port := Port,
-              user := User, password := Password} = Node) ->
-            case apply(Mod, FunName, [Host, Port, User, Password, Seed, Arg, Receiver]) of
-                {ok, Txs} ->
-                    {ok, {Node, Txs}};
-                {error, _Reason} = Err -> Err
-            end
-        end,
-    {Good, Errors} = aeu_lib:pmap(FetchFun, ParentNodes, 10000),
-    case responses_consensus(Good, Errors, length(ParentNodes)) of
-        {ok, _Node, Txs} -> {ok, Txs};
-        {error, not_found} -> {error, not_found};
-        {error, no_parent_chain_agreement} = Err ->
-            %% TODO: decide what to do: this is likely happening because of
-            %% rapid parent chain reorganizations
-            lager:warning("Parent nodes are unable to reach consensus regarding commitments", []),
-            Err
-    end.
-
 
 post_commitment(Who, Commitment,
             #state{ parent_hosts = ParentNodes,

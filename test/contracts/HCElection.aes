@@ -25,11 +25,11 @@ main contract HCElection =
 
   stateful entrypoint elect(entropy_str : string) =
     assert_protocol_call()
-    let new_leader = elect_at_height(Chain.block_height, entropy_str)
+    let new_leader = elect_at_height(Chain.block_height, entropy_str, {})
     state.main_staking_ct.post_elect()
     put(state{ leader = new_leader, entropy = entropy_str})
 
-  entrypoint elect_at_height(height : int, entropy_str : string) =
+  entrypoint elect_at_height(height : int, entropy_str : string, commitments : map(string, list(string))) =
     let entropy : hash = Crypto.sha256(entropy_str)
     let sorted = state.main_staking_ct.sorted_validators() 
     let shot = Bytes.to_int(entropy) * height mod state.main_staking_ct.total_stake()

@@ -36,8 +36,6 @@
             terminate/2, code_change/3]).
 
 -export([post_block/1,
-         post_collected_commitments/2,
-         post_collected_commitments_by_height/2,
          get_block_by_height/1,
          get_commitments/1]).
 
@@ -80,14 +78,6 @@ stop() ->
 -spec post_block(aec_parent_chain_block:block()) -> ok.
 post_block(Block) ->
     gen_server:cast(?SERVER, {post_block, Block}).
-
--spec post_collected_commitments(aec_parent_chain_block:hash(), list()) -> ok.
-post_collected_commitments(BlockHash, Commitments) ->
-    gen_server:cast(?SERVER, {post_collected_commitments, {hash, BlockHash}, Commitments}).
-
--spec post_collected_commitments_by_height(non_neg_integer(), list()) -> ok.
-post_collected_commitments_by_height(BlockHeight, Commitments) ->
-    gen_server:cast(?SERVER, {post_collected_commitments, {height, BlockHeight}, Commitments}).
 
 -spec get_block_by_height(non_neg_integer()) -> {ok, aec_parent_chain_block:block()}
                                               | {error, not_in_cache}
@@ -188,10 +178,6 @@ handle_cast({post_block, Block}, #state{} = State0) ->
     State = post_block(Block, State0),
     State1 = maybe_post_initial_commitments(Block, State),
     {noreply, State1};
-handle_cast({post_collected_commitments, HashOrHeight, Commitments}, #state{} = State0) ->
-    State = post_collected_commitments(HashOrHeight, Commitments, State0),
-    %% TODO check for a race with hashes
-    {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -344,7 +330,6 @@ post_block(Block, #state{max_size = MaxSize,
                     State1 =
                         case BlockHeight > GCHeight of
                             true ->
-                                aec_parent_connector:request_commitments_by_hash(BlockHash),
                                 insert_block(Block, State0);
                             false ->
                                 State0
@@ -361,26 +346,6 @@ post_block(Block, #state{max_size = MaxSize,
                     maybe_request_next_block(BlockHeight, State3),
                     State3
             end
-    end.
-
-post_collected_commitments({hash, Hash}, Commitments, #state{ } = State) ->
-    case get_block_height_by_hash(Hash, State) of
-        {ok, Height} ->
-            post_collected_commitments({height, Height}, Commitments, State);
-        {error, not_in_cache} ->
-            lager:info("ASDF NOT IIN CACHE?! hash ~p", [Hash]),
-            State %% TODO: handle forks
-    end;
-post_collected_commitments({height, Height}, Commitments,
-                           #state{ } = State) ->
-    case get_block(Height, State) of
-        {ok, Block0} ->
-            Block = aec_parent_chain_block:set_commitments(Block0, Commitments),
-            lager:info("ASDF INSERTING BACK BLOCK ~p", [Block]),
-            insert_block(Block, State);
-        {error, _} -> %% old block
-            lager:info("ASDF NOT IIN CACHE?! height: ~p", [Height]),
-            State
     end.
 
 maybe_request_previous_block(0 = _BlockHeight, _State) -> pass;
@@ -438,6 +403,7 @@ post_commitments(TopHash, #state{sign_module = SignModule} = State) ->
     LocalStakers =
         lists:filter(fun SignModule:is_key_present/1, AllStakers),
     Commitment = aeser_api_encoder:encode(key_block_hash, TopHash),
+    lager:info("ASDF TopHash is ~p, posting ~p", [TopHash, Commitment]),
     lists:foreach(
         fun(Staker) ->
             case aec_parent_connector:post_commitment(Staker, Commitment) of
