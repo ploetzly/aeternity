@@ -185,7 +185,6 @@ dirty_validate_micro_node_with_ctx(_Node, _Block, _Ctx) -> ok.
 state_pre_transform_key_node_consensus_switch(_Node, Trees) -> Trees.
 state_pre_transform_key_node(Node, Trees) ->
     Header = aec_block_insertion:node_header(Node),
-    lager:info("ASDF HEADER ~p", [Header]),
     {TxEnv, _Trees} = aetx_env:tx_env_and_trees_from_top(aetx_transaction),
 %%    TxEnv0 = aetx_env:tx_env_from_key_header(
 %%              Header, aec_block_insertion:node_hash(Node),
@@ -195,7 +194,7 @@ state_pre_transform_key_node(Node, Trees) ->
     %% makes sense to base the tx call on the previous height altogether
 %%    TxEnv = aetx_env:set_height(TxEnv0, aec_headers:height(Header) - 1),
     Height = aetx_env:height(TxEnv),
-    PCHeight = pc_height(Height),
+    PCHeight = pc_height(Height + 1), %% next parent chain block!
     case aec_parent_chain_cache:get_block_by_height(PCHeight) of
         {error, not_in_cache} ->
             aec_conductor:throw_error(parent_chain_block_not_synced);
@@ -212,11 +211,10 @@ state_pre_transform_key_node(Node, Trees) ->
             CallData = aeser_api_encoder:encode(contract_bytearray, CD),
             case call_consensus_contract_(?ELECTION_CONTRACT, TxEnv, Trees, CallData, ["elect(", HashStr,  ")"], 0) of
                 {ok, Trees1, _} ->
-                aeu_ets_cache:reinit(
-                    ?ETS_CACHE_TABLE,
-                    current_leader,
-                    fun beneficiary_/0),
-                    lager:info("ASDF PUT LEADER OK", []),
+                    aeu_ets_cache:reinit(
+                        ?ETS_CACHE_TABLE,
+                        current_leader,
+                        fun () -> beneficiary_(TxEnv, Trees1) end),
                     Trees1;
                 {error, What} ->
                     %% maybe a softer approach than crash and burn?
@@ -321,12 +319,9 @@ generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := _E
             {TxEnv, Trees} = aetx_env:tx_env_and_trees_from_top(aetx_transaction),
             Height0 = aetx_env:height(TxEnv),
             Height = Height0 + 1,
-            lager:info("ASDF Parent Block ~p", [Block]),
 %%            lager:info("ASDF Height ~p PrevHash ~p",
 %%            [Height0, aeser_api_encoder:encode(key_block_hash,
 %%            aec_headers:prev_key_hash(Candidate))]),
-            lager:warning("ASDF!!!! PrevHash ~p, TxEnvHash ~p", [PrevHash,
-                                                                 aetx_env:key_hash(TxEnv)]),
             {ok, CD} = aeb_fate_abi:create_calldata("elect_next",
                                                     [aefa_fate_code:encode_arg({string, Entropy}),
                                                      CommitmentsSophia
@@ -538,10 +533,8 @@ call_consensus_contract_(ContractType, TxEnv, Trees, EncodedCallData, Keyword, A
             ok = aect_call:return_type(Call),
             %% prune the call being produced. If not done, the fees for it
             %% would be redistributed to the corresponding leaders
-            lager:info("ASDF RESULT OK", []),
             {ok, aect_call_state_tree:prune(Height, Trees2), Call};
         {error, _What} = Err ->
-            lager:info("ASDF RESULT ERR ~p", [_What]),
             Err
     end.
 
@@ -552,8 +545,10 @@ beneficiary() ->
         fun beneficiary_/0).
 
 beneficiary_() ->
-    %% TODO: cache this
     {TxEnv, Trees} = aetx_env:tx_env_and_trees_from_top(aetx_transaction),
+    beneficiary_(TxEnv, Trees).
+
+beneficiary_(TxEnv, Trees) ->
     {ok, CD} = aeb_fate_abi:create_calldata("leader", []),
     CallData = aeser_api_encoder:encode(contract_bytearray, CD),
     case call_consensus_contract_(?ELECTION_CONTRACT, TxEnv, Trees, CallData, "leader()", 0) of
@@ -570,9 +565,9 @@ next_beneficiary() ->
     Height0 = aetx_env:height(TxEnv),
     Height = Height0 + 1,
     PCHeight = pc_height(Height), 
-    lager:info("ASDF NEXT BENEFICIARY HEIGHT ~p", [Height0]),
     case aec_parent_chain_cache:get_block_by_height(PCHeight) of
         {ok, Block} ->
+
             Entropy = aec_parent_chain_block:hash(Block),
             CommitmentsSophia = encode_commtiments(Block),
             {ok, CD} = aeb_fate_abi:create_calldata("elect_next",
@@ -591,11 +586,9 @@ next_beneficiary() ->
             SignModule = get_sign_module(),
             case SignModule:set_candidate(Leader) of
                 {error, key_not_found} ->
-                    lager:warning("ASDF NOT FOUND LEADER!!! ~p", [Leader]),
                     timer:sleep(1000),
                     {error, not_leader};
                 ok ->
-                    lager:info("ASDF FOUND LEADER ~p", [Leader]),
                     {ok, Leader}
             end;
         {error, _Err} ->

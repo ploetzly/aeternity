@@ -866,12 +866,15 @@ apply_node_transactions(Node, Trees, ForkInfo, State) ->
             %% leader generation happens after pre_transformations
             case validate_generation_leader(Node, Trees3, Env) of
                 ok ->
+                    lager:info("ASDF LEADER VALIDATION OK!", []),
                     Delay  = aec_governance:beneficiary_reward_delay(),
                     case Height > aec_block_genesis:height() + Delay of
                         true  -> {grant_fees(Node, Trees3, Delay, FraudStatus, State), TotalFees, no_events()};
                         false -> {Trees3, TotalFees, no_events()}
                     end;
-                {error, Reason} -> error({leader_validation_failed, Reason})
+                {error, Reason} ->
+                    lager:info("ASDF LEADER VALIDATION FAILED WITH ~p", [Reason]),
+                    error({leader_validation_failed, Reason})
             end
     end.
 
