@@ -166,10 +166,9 @@ header_by_height(Node, H) ->
             abort("Could not fetch header at height ~p", [H])
     end.
 
-
 assert_gc(Node, TopHeight, RollbackHeight) ->
-    #{ enabled  := Enabled
-     , history  := History} = rpc:call(Node, aec_db_gc, config, []),
+    #{ <<"enabled">>  := Enabled
+     , <<"history">>  := History} = rpc:call(Node, aec_db_gc, config, []),
     case Enabled of
         true ->
             LastGcHeight = last_gc_height(Node),
