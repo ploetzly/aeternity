@@ -122,7 +122,7 @@ info(Keys) when is_list(Keys) ->
     end.
     
 info_keys() ->
-    [history, last_gc, active_sweeps, from_start, trees].
+    [enabled, history, last_gc, active_sweeps, from_start, trees].
 
 %% called from aec_db on startup
 %% maybe_swap_nodes() ->
@@ -238,7 +238,9 @@ info_item(active_sweeps, #st{scanners = Scanners}) ->
 info_item(from_start, #st{from_start = Flag}) ->
     Flag;
 info_item(trees, #st{trees = Trees}) ->
-    Trees.
+    Trees;
+info_item(enabled, #st{enabled = Bool}) ->
+    Bool.
 
 perform_switch(Trees, Height) ->
     clear_secondary_tables(Trees),
