@@ -22,17 +22,11 @@
 %% - writing of the reachable nodes from cache to disk
 %% - subsequent restart of the node
 %% - removing all old nodes and copying only reachable ones
-%%
-%% If uses wishes to keep GC off by default (as is in default config) but invoke it manually,
-%% that is possible with calling of aec_db_gc:run() or aec_db_gc:run(HistoryLength).
 
 -behaviour(gen_server).
 
 %% API
--export([start_link/0,
-         run/0,
-         run/1,
-         stop/0]).
+-export([start_link/0]).
 
 -export([ height_of_last_gc/0
         , info/0
@@ -103,23 +97,13 @@
 %% We don't support reconfiguration of config parameters when the GC is already up,
 %% doesn't seem to have practical utility.
 start_link() ->
-    #{enabled := _, trees := _, history := _} = Config = config(),
+    #{<<"enabled">> := _, <<"trees">> := _, <<"history">> := _} = Config = config(),
     gen_server:start_link({local, ?MODULE}, ?MODULE, Config, []).
 
 -spec maybe_garbage_collect(aec_headers:header()) -> ok | nop.
 maybe_garbage_collect(Header) ->
     gen_server:call(
       ?MODULE, {maybe_garbage_collect, aec_headers:height(Header), Header}).
-
-run() ->
-    #{history := History} = config(),
-    run(History).
-
-run(History) when is_integer(History), History > 0 ->
-    gen_server:call(?MODULE, {run, History}).
-
-stop() ->
-    gen_server:stop(?MODULE).
 
 %% If GC is disabled, or there hasn't yet been a GC, this function returns 0.
 -spec height_of_last_gc() -> non_neg_integer().
@@ -149,10 +133,12 @@ info_keys() ->
 %%%===================================================================
 
 %% Change of configuration parameters requires restart of the node.
-init(#{ enabled    := Enabled
-      , trees      := Trees
-      , from_start := FromStart
-      , history    := History} = Cfg) when is_integer(History), History > 0 ->
+init(#{ <<"enabled">>    := Enabled
+      , <<"trees">>      := Trees
+      , <<"from_start">> := FromStart
+      , <<"history">>    := History
+      , <<"minimum_height">> := MinHeight
+      } = Cfg) when is_integer(History), History > 0 ->
     lager:debug("Cfg = ~p", [Cfg]),
     LastSwitch = case Enabled of
                      true ->
@@ -167,7 +153,7 @@ init(#{ enabled    := Enabled
                from_start  = FromStart,
                trees       = Trees,
                history     = History,
-               min_height  = History,
+               min_height  = MinHeight,
                last_switch = LastSwitch,
                synced      = false},
     {ok, Data}.
@@ -255,23 +241,49 @@ info_item(trees, #st{trees = Trees}) ->
     Trees.
 
 perform_switch(Trees, Height) ->
+    clear_secondary_tables(Trees),
     ok = aec_db:ensure_transaction(
            fun() ->
-                   switch_and_clear_tables(Trees),
+                   switch_tables(Trees),
                    aec_db:write_last_gc_switch(Height)
            end),
     [start_scanner(T, Height) || T <- Trees].
 
-switch_and_clear_tables(Trees) ->
-    [switch_and_clear(T) || T <- Trees],
-    ok.
+%% perform_switch(Trees, Height) ->
+%%     ok = aec_db:ensure_transaction(
+%%            fun() ->
+%%                    switch_and_clear_tables(Trees),
+%%                    aec_db:write_last_gc_switch(Height)
+%%            end),
+%%     [start_scanner(T, Height) || T <- Trees].
 
-switch_and_clear(Name) ->
+clear_secondary_tables(Trees) ->
+    [clear_secondary(T) || T <- Trees].
+
+clear_secondary(Name) ->
     Secondary = aec_db:secondary_state_tab(Name),
-    lager:debug("Will clear secondary (~p)", [Secondary]),
-    aec_db:clear_table(Secondary),
+    lager:debug("Clearing secondary for ~p (~p)", [Name, Secondary]),
+    aec_db:clear_table(Secondary).
+
+switch_tables(Trees) ->
+    [switch(T) || T <- Trees].
+
+%% switch_and_clear_tables(Trees) ->
+%%     [switch_and_clear(T) || T <- Trees],
+%%     ok.
+
+switch(Name) ->
+    Secondary = aec_db:secondary_state_tab(Name),
+    lager:debug("Making ~p the primary for ~p", [Secondary, Name]),
     aec_db:make_primary_state_tab(Name, Secondary),
     ok.
+
+%% switch_and_clear(Name) ->
+%%     Secondary = aec_db:secondary_state_tab(Name),
+%%     lager:debug("Will clear secondary (~p)", [Secondary]),
+%%     aec_db:clear_table(Secondary),
+%%     aec_db:make_primary_state_tab(Name, Secondary),
+%%     ok.
 
 start_scanner(Name, Height) ->
     Parent = self(),
@@ -385,13 +397,17 @@ signal_switching_failed_and_reply(St, Reply) ->
 
 config() ->
     Trees = get_trees(),
+    %% In the LC below, we rely on the schema to provide default values.
     M = maps:from_list(
-          [{binary_to_atom(Key, utf8),
-            aeu_env:user_config([<<"chain">>, <<"garbage_collection">>, Key], Default)} ||
-              {Key, Default} <- [{<<"enabled">>, false},
-                                 {<<"history">>, ?DEFAULT_HISTORY},
-                                 {<<"from_start">>, false}]]),
-    M#{trees => Trees}.
+          [{Key, ok(aeu_env:find_config([<<"chain">>, <<"garbage_collection">>, Key],
+                                        [user_config, schema_default]))} ||
+              Key <- [<<"enabled">>,
+                      <<"history">>,
+                      <<"minimum_height">>,
+                      <<"from_start">>]]),
+    M#{<<"trees">> => Trees}.
+
+ok({ok, Value}) -> Value.
 
 get_trees() ->
     {ok, Trees} = aeu_env:find_config([<<"chain">>, <<"garbage_collection">>, <<"trees">>],

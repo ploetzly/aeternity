@@ -79,7 +79,7 @@
 
 %% GC-related
 -export([ gced_tables/0
-        , state_tab/1
+        , primary_state_tab/1
         , make_primary_state_tab/2
         , secondary_state_tab/1
         , write_last_gc_switch/1
@@ -901,14 +901,16 @@ write_block_state(Hash, Trees, AccDifficulty, ForkId, Fees, Fraud) ->
            write(BlockState)
        end).
 
--spec state_tab(tree_name()) -> table_name().
-state_tab(T) ->
-    persistent_term:get({primary_state_tab, T}, T).
+%% -spec state_tab(tree_name()) -> table_name().
+%% state_tab(T) ->
+%%     Prim = primary_state_tab(T),
+%%     lager:debug("State tab (~p): ~p", [T, Prim]),
+%%     Prim.
 
 -spec secondary_state_tab(tree_name()) -> table_name().
 secondary_state_tab(Tree) ->
     Tab = tree_table_name(Tree),
-    Prim = persistent_term:get({primary_state_tab, Tree}),
+    Prim = primary_state_tab(Tree),
     secondary_state_tab_(Tab, Prim).
 
 secondary_state_tab_(Tab, Prim) ->
@@ -916,14 +918,23 @@ secondary_state_tab_(Tab, Prim) ->
     [Secondary] = [Tab|Cs] -- [Prim],
     Secondary.
 
+-spec primary_state_tab(tree_name()) -> table_name().
+primary_state_tab(Tree) ->
+    persistent_term:get({primary_state_tab, Tree}).
+
+set_primary_state_tab(Tree, Tab) ->
+    lager:debug("Set Primary (~p) -> ~p", [Tree, Tab]),
+    persistent_term:put({primary_state_tab, Tree}, Tab).
+
 -spec gc_enabled(tree_name()) -> false | {true, {table_name(), table_name()}}.
 gc_enabled(Tree) ->
-    case persistent_term:get({primary_state_tab, Tree}, undefined) of
-        undefined ->
-            false;
+    try primary_state_tab(Tree) of
         Prim ->
             Tab = tree_table_name(Tree),
             {true, {Prim, secondary_state_tab_(Tab, Prim)}}
+    catch
+        error:_ ->
+            false
     end.
 
 write_last_gc_switch(Height) ->
@@ -952,7 +963,8 @@ make_primary_state_tab(Tree, P) ->
                 false ->
                     error({not_a_state_tab_candidate, {Tree, P}})
             end,
-            cache_primary_state_tab(Tree, P);
+            cache_primary_state_tab(Tree, P),
+            lager:debug("cached primary (~p): ~p", [Tree, primary_state_tab(Tree)]);
         error ->
             error({not_a_gced_state_tab, Tree})
     end.
@@ -975,7 +987,7 @@ cache_primary_state_tabs() ->
 -spec cache_primary_state_tab(tree_name(), table_name()) -> ok.
 cache_primary_state_tab(T, P) ->
     lager:debug("Caching primary for ~p: ~p", [T, P]),
-    persistent_term:put({primary_state_tab, T}, P).
+    set_primary_state_tab(T, P).
 
 write_genesis_hash(Hash) when is_binary(Hash) ->
     ?t(write(#aec_chain_state{key = genesis_hash, value = Hash})).
