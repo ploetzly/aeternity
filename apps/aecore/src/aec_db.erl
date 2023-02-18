@@ -140,6 +140,8 @@
         , dirty_first/1
         , clear_table/1 ]).
 
+-export([cleanup/0]).
+
 -export([backend_mode/0]).
 
 -export([ install_test_env/0
@@ -167,8 +169,16 @@
 %% - one per state tree
 %% - untrusted peers
 
--define(BYPASS, {?MODULE, mnesia_bypass}).
--define(DIRECT_API, {?MODULE, direct_api}).
+%% Persistent-term keys.
+%% For cleanup purposes, we ensure that element(1,Key) == ?MODULE
+-define(PT_BYPASS,                  {?MODULE, mnesia_bypass}).
+-define(PT_DIRECT_API,              {?MODULE, direct_api}).
+-define(PT_ADDED_PTS,               {?MODULE, added_pts}).
+-define(PT_BACKEND_MODULE,          {?MODULE, backend_module}).
+-define(PT_CHAIN_MIGRATION(Key),    {?MODULE, chain_migration, Key}).
+-define(PT_MIGRATION_KEY_HEADERS,   {?MODULE, chain_migration, key_headers}).
+-define(PT_PRIMARY_STATE_TAB(Tree), {?MODULE, primary_state_tab, Tree}).
+
 
 -define(TAB(Record),
         {Record, tab(Mode, Record, record_info(fields, Record), [])}).
@@ -206,6 +216,12 @@
 -type gc_table_spec() :: #{ tree := tree_name()
                           , copies := [table_name()] }.
 -type map_of_gced_tables() :: #{ table_name() := gc_table_spec() }.
+
+cleanup() ->
+    PTs = persistent_term:get(),
+    [persistent_term:erase(K) || {K,_} <- PTs,
+                                 element(1, K) == ?MODULE],
+    ok.
 
 tables(Mode0) ->
     Mode = expand_mode(Mode0),
@@ -496,7 +512,7 @@ activity(Type, Fun) when Type == async_dirty;
     end.
 
 use_mrdb_api() ->
-    persistent_term:get(?DIRECT_API, false).
+    persistent_term:get(?PT_DIRECT_API, false).
 
 ensure_activity(mnesia_rocksdb, Type, Fun) ->
     %% lager:debug("Backend = mnesia_rocksdb, Type = ~p, F = ~p:~p/0",
@@ -560,7 +576,7 @@ do_transaction(_BackendMod, Type, Fun) ->
     mnesia:activity(Type, Fun).
 
 bypass_on_commit(R) ->
-    case persistent_term:get(?BYPASS, no_bypass) of
+    case persistent_term:get(?PT_BYPASS, no_bypass) of
         rocksdb ->
             {mnesia, _, {tidstore, TStore, _, _}} = get(mnesia_activity_state),
             try mrdb:activity(
@@ -590,7 +606,7 @@ bypass_on_commit(R) ->
                     exit(Reason)
             end;
         Other ->
-            lager:debug("?BYPASS -> ~p", [Other]),
+            lager:debug("?PT_BYPASS -> ~p", [Other]),
             R
     end.
 
@@ -836,7 +852,7 @@ find_headers_and_hash_at_height(Height) when is_integer(Height), Height >= 0 ->
 %% When benchmarked on an cloud SSD it is faster then mnesia:index_read followed by filter
 -spec find_key_headers_and_hash_at_height(pos_integer()) -> [{binary(), aec_headers:key_header()}].
 find_key_headers_and_hash_at_height(Height) when is_integer(Height), Height >= 0 ->
-    case persistent_term:get({?MODULE, chain_migration, key_headers}, done) of
+    case persistent_term:get(?PT_MIGRATION_KEY_HEADERS, done) of
         in_progress ->
             R = dirty_select(aec_headers, [{ #aec_headers{key = '_',
                                                           value = '$1',
@@ -920,11 +936,11 @@ secondary_state_tab_(Tab, Prim) ->
 
 -spec primary_state_tab(tree_name()) -> table_name().
 primary_state_tab(Tree) ->
-    persistent_term:get({primary_state_tab, Tree}).
+    persistent_term:get(?PT_PRIMARY_STATE_TAB(Tree)).
 
 set_primary_state_tab(Tree, Tab) ->
     lager:debug("Set Primary (~p) -> ~p", [Tree, Tab]),
-    persistent_term:put({primary_state_tab, Tree}, Tab).
+    persistent_term:put(?PT_PRIMARY_STATE_TAB(Tree), Tab).
 
 -spec gc_enabled(tree_name()) -> false | {true, {table_name(), table_name()}}.
 gc_enabled(Tree) ->
@@ -1016,11 +1032,11 @@ start_chain_migration(Key) ->
     %% Writes occur before the error store is initialized - if error keys are present then this will crash
     %% Fortunately this write will be correctly handled by the rocksdb bypass logic
     ?t(write(#aec_chain_state{key = {chain_migration_lock, Key}, value = lock})),
-    persistent_term:put({?MODULE, chain_migration, Key}, in_progress).
+    persistent_term:put(?PT_CHAIN_MIGRATION(Key), in_progress).
 
 finish_chain_migration(Key) ->
     ?t(delete(aec_chain_state, {chain_migration_lock, Key}, write)),
-    persistent_term:erase({?MODULE, chain_migration, Key}).
+    persistent_term:erase(?PT_CHAIN_MIGRATION(Key)).
 
 -spec chain_migration_status(atom()) -> in_progress | done.
 chain_migration_status(Key) ->
@@ -1449,21 +1465,21 @@ prepare_mnesia_bypass() ->
         [] ->
             lager:debug("No bypass", []),
             %% Check whether we can bypass mnesia in some cases
-            persistent_term:erase(?BYPASS); %% TODO: add leveled backend here
+            persistent_term:erase(?PT_BYPASS); %% TODO: add leveled backend here
         [_|_] ->
             case aeu_env:find_config([<<"chain">>, <<"db_direct_access">>], [ user_config
                                                                             , schema_default
                                                                             , {value, false} ]) of
                 {ok, true} ->
                     lager:debug("Enabling direct access for rocksdb", []),
-                    persistent_term:put(?DIRECT_API, true);
+                    persistent_term:put(?PT_DIRECT_API, true);
                 _ ->
                     case aeu_env:find_config([<<"chain">>, <<"db_commit_bypass">>], [ user_config
                                                                                     , schema_default
                                                                                     , {value, true} ]) of
                         {ok, true} ->
                             lager:debug("Enabling bypass for rocksdb", []),
-                            persistent_term:put(?BYPASS, rocksdb);
+                            persistent_term:put(?PT_BYPASS, rocksdb);
                         _ ->
                             lager:debug("NOT enabling bypass logic for rocksdb", [])
                     end
@@ -1510,10 +1526,10 @@ start_db() ->
     end.
 
 put_backend_module(#{module := M}) ->
-    persistent_term:put({?MODULE, backend_module}, M).
+    persistent_term:put(?PT_BACKEND_MODULE, M).
 
 get_backend_module() ->
-    persistent_term:get({?MODULE, backend_module}).
+    persistent_term:get(?PT_BACKEND_MODULE).
 
 mrdb_get_ref(Tab) ->
     mnesia_rocksdb_admin:get_ref(Tab, undefined).
@@ -1533,7 +1549,7 @@ uninstall_test_env() ->
     remove_added_pts().
 
 ensure_backend_module() ->
-    Key = {aec_db, backend_module},
+    Key = ?PT_BACKEND_MODULE,
     case persistent_term:get(Key, error) of
         error ->
             note_added_pt(Key),
@@ -1547,13 +1563,14 @@ get_test_backend_module() ->
     list_to_existing_atom(Str).
 
 note_added_pt(Key) ->
-    Var = {?MODULE, added_pts},
+    Var = ?PT_ADDED_PTS,
     Set = persistent_term:get(Var, ordsets:new()),
     persistent_term:put(Var, ordsets:add_element(Key, Set)).
 
 remove_added_pts() ->
-    Keys = persistent_term:get({?MODULE, added_pts}, ordsets:new()),
-    [persistent_term:erase(K) || K <- Keys].
+    Keys = persistent_term:get(?PT_ADDED_PTS, ordsets:new()),
+    [persistent_term:erase(K) || K <- Keys],
+    persistent_term:erase(?PT_ADDED_PTS).
 
 %% == End Test setup env
 
