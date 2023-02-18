@@ -168,12 +168,12 @@ header_by_height(Node, H) ->
 
 
 assert_gc(Node, TopHeight, RollbackHeight) ->
-    #{enabled  := Enabled
-    , interval := _Interval
-    , history  := History} = rpc:call(Node, aec_db_gc, config, []),
+    #{ enabled  := Enabled
+     , history  := History} = rpc:call(Node, aec_db_gc, config, []),
     case Enabled of
         true ->
-            LowestAllowedHeight = TopHeight - History,
+            LastGcHeight = last_gc_height(Node),
+            LowestAllowedHeight = min(LastGcHeight, TopHeight - History),
             case RollbackHeight < LowestAllowedHeight of
                 true ->
                     abort("Rollback height (~p) is marked for GC. Lowest allowed rollback height is ~p",
@@ -181,4 +181,12 @@ assert_gc(Node, TopHeight, RollbackHeight) ->
                 false -> ok
             end;
         false -> ok
+    end.
+
+last_gc_height(Node) ->
+    case rpc:call(Node, aec_db_gc, height_of_last_gc, []) of
+        {badrpc, _} ->
+            0;
+        Height ->
+            Height
     end.

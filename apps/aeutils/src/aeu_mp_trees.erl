@@ -1153,9 +1153,7 @@ set_branch_value(Branch, Value) ->
 db_get(Hash, DB) ->
     case aeu_mp_trees_db:get(Hash, DB) of
         {value, Val} -> Val;
-        none ->
-            lager:error("Hash not present. DB = ~p", [DB]),
-            error({hash_not_present_in_db, Hash})
+        none -> error({hash_not_present_in_db, Hash})
     end.
 
 db_find_in_cache(Hash, DB) ->
