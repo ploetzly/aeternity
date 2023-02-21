@@ -403,7 +403,6 @@ post_commitments(TopHash, #state{sign_module = SignModule} = State) ->
     LocalStakers =
         lists:filter(fun SignModule:is_key_present/1, AllStakers),
     Commitment = aeser_api_encoder:encode(key_block_hash, TopHash),
-    lager:info("ASDF TopHash is ~p, posting ~p", [TopHash, Commitment]),
     lists:foreach(
         fun(Staker) ->
             case aec_parent_connector:post_commitment(Staker, Commitment) of

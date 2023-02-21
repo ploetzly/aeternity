@@ -9,7 +9,6 @@
 -module(aec_parent_chain_block).
 -define(NOT_SET, not_set).
 -opaque hash() :: binary().
--opaque commitments() :: list().
 
 %% top's state
 -record(block,
@@ -17,7 +16,7 @@
         hash = <<>> :: binary(),
         height = 0 :: non_neg_integer(),
         prev_hash = <<>> :: binary(),
-        commitments = ?NOT_SET :: ?NOT_SET | commitments()
+        commitments = ?NOT_SET :: ?NOT_SET | list()
     }).
 
 -opaque block() :: #block{}.
@@ -30,8 +29,7 @@
          set_commitments/2]).
 
 -export_type([block/0,
-              hash/0,
-              commitments/0]).
+              hash/0]).
 
 %% Functionality:
 %% This is a reusable structure to represent parent chain's blocks
@@ -58,10 +56,10 @@ height(#block{height = Height}) -> Height.
 -spec prev_hash(block()) -> binary().
 prev_hash(#block{prev_hash = PrevHash}) -> PrevHash.
 
--spec set_commitments(block(), commitments()) -> block().
+-spec set_commitments(block(), list()) -> block().
 set_commitments(Block, Commitments) ->
     Block#block{commitments = Commitments}.
 
--spec commitments(block()) -> {ok, commitments()} | error.
+-spec commitments(block()) -> {ok, list()} | error.
 commitments(#block{commitments = ?NOT_SET}) -> error;
 commitments(#block{commitments = Commitments}) -> {ok, Commitments}.

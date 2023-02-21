@@ -313,15 +313,11 @@ seal_correct_signature(Header, Signature, _Padding) ->
 generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := _Expected} = _Config, _) ->
     case aec_parent_chain_cache:get_block_by_height(PCHeight) of
         {ok, Block} ->
-            PrevHash = aec_headers:prev_key_hash(Candidate),
             Entropy = aec_parent_chain_block:hash(Block),
             CommitmentsSophia = encode_commtiments(Block),
             {TxEnv, Trees} = aetx_env:tx_env_and_trees_from_top(aetx_transaction),
             Height0 = aetx_env:height(TxEnv),
             Height = Height0 + 1,
-%%            lager:info("ASDF Height ~p PrevHash ~p",
-%%            [Height0, aeser_api_encoder:encode(key_block_hash,
-%%            aec_headers:prev_key_hash(Candidate))]),
             {ok, CD} = aeb_fate_abi:create_calldata("elect_next",
                                                     [aefa_fate_code:encode_arg({string, Entropy}),
                                                      CommitmentsSophia
@@ -363,7 +359,6 @@ set_key_block_seal(KeyBlock0, Seal) ->
     {ok, Block} = aec_parent_chain_cache:get_block_by_height(PCHeight),
     Entropy = aec_parent_chain_block:hash(Block),
     CommitmentsSophia = encode_commtiments(Block),
-    PrevHash = aec_blocks:prev_key_hash(KeyBlock0),
     {ok, CD} = aeb_fate_abi:create_calldata("elect_next",
                                             [aefa_fate_code:encode_arg({string, Entropy}),
                                              CommitmentsSophia
@@ -480,9 +475,6 @@ genesis_protocol_version() ->
             hd(lists:sort(maps:keys(aec_hard_forks:protocols())))
       end).
 
-
-call_consensus_contract(Contract, Node, Trees, EncodedCallData, Keyword) ->
-    call_consensus_contract(Contract, Node, Trees, EncodedCallData, Keyword, 0).
 
 call_consensus_contract(Contract, Node, Trees, EncodedCallData, Keyword, Amount) ->
     Header = aec_block_insertion:node_header(Node),
@@ -722,9 +714,11 @@ encode_commtiments(Block) ->
     {ok, Commitments} = aec_parent_chain_block:commitments(Block),
     Commitments1 =
         lists:foldl(
-            fun({Delegate, Commitment}, Accum) ->
-                maps:update_with(Commitment, fun(Ds) -> [Delegate | Ds] end,
-                                 [Delegate], Accum)
+            fun({From0, Commitment0}, Accum) ->
+                {ok, Commitment} = aeser_api_encoder:safe_decode(key_block_hash, Commitment0),
+                {ok, From1} = aeser_api_encoder:safe_decode(account_pubkey, From0),
+                From = aefa_fate_code:encode_arg({address, From1}),
+                maps:update_with(aefa_fate_code:encode_arg({hash, Commitment}), fun(Fs) -> [From | Fs] end, [From], Accum)
             end,
             #{},
             Commitments),
