@@ -917,12 +917,6 @@ write_block_state(Hash, Trees, AccDifficulty, ForkId, Fees, Fraud) ->
            write(BlockState)
        end).
 
-%% -spec state_tab(tree_name()) -> table_name().
-%% state_tab(T) ->
-%%     Prim = primary_state_tab(T),
-%%     lager:debug("State tab (~p): ~p", [T, Prim]),
-%%     Prim.
-
 -spec secondary_state_tab(tree_name()) -> table_name().
 secondary_state_tab(Tree) ->
     Tab = tree_table_name(Tree),

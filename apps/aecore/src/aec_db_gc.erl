@@ -120,7 +120,7 @@ info(Keys) when is_list(Keys) ->
         Invalid ->
             error({invalid_info_keys, Invalid})
     end.
-    
+
 info_keys() ->
     [enabled, history, last_gc, active_sweeps, from_start, trees].
 
@@ -251,14 +251,6 @@ perform_switch(Trees, Height) ->
            end),
     [start_scanner(T, Height) || T <- Trees].
 
-%% perform_switch(Trees, Height) ->
-%%     ok = aec_db:ensure_transaction(
-%%            fun() ->
-%%                    switch_and_clear_tables(Trees),
-%%                    aec_db:write_last_gc_switch(Height)
-%%            end),
-%%     [start_scanner(T, Height) || T <- Trees].
-
 clear_secondary_tables(Trees) ->
     [clear_secondary(T) || T <- Trees].
 
@@ -270,22 +262,11 @@ clear_secondary(Name) ->
 switch_tables(Trees) ->
     [switch(T) || T <- Trees].
 
-%% switch_and_clear_tables(Trees) ->
-%%     [switch_and_clear(T) || T <- Trees],
-%%     ok.
-
 switch(Name) ->
     Secondary = aec_db:secondary_state_tab(Name),
     lager:debug("Making ~p the primary for ~p", [Secondary, Name]),
     aec_db:make_primary_state_tab(Name, Secondary),
     ok.
-
-%% switch_and_clear(Name) ->
-%%     Secondary = aec_db:secondary_state_tab(Name),
-%%     lager:debug("Will clear secondary (~p)", [Secondary]),
-%%     aec_db:clear_table(Secondary),
-%%     aec_db:make_primary_state_tab(Name, Secondary),
-%%     ok.
 
 start_scanner(Name, Height) ->
     Parent = self(),
