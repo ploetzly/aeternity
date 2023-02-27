@@ -145,7 +145,7 @@ init([ParentConnMod, FetchInterval, ParentHosts, NetworkId, SignModule, Recipien
                              sign_module = SignModule,
                              recipient = Recipient,
                              amount = 0,
-                             fee = 100000000000000
+                             fee = 100000000000000 %% TODO: make configurable
                             },
     {ok, #state{parent_conn_mod = ParentConnMod,
                 fetch_interval = FetchInterval,
@@ -188,10 +188,10 @@ handle_cast({request_block_by_height, Height}, State) ->
 
 -spec handle_info(any(), state()) -> {noreply, state()}.
 handle_info(check_parent, #state{parent_hosts = ParentNodes,
-                                parent_conn_mod = Mod,
-                                parent_top = ParentTop,
-                                fetch_interval = FetchInterval,
-                                rpc_seed = Seed} = State) ->
+                                 parent_conn_mod = Mod,
+                                 parent_top = ParentTop,
+                                 fetch_interval = FetchInterval,
+                                 rpc_seed = Seed} = State) ->
     %% Parallel fetch top block from all configured parent chain nodes
     ParentTop1 =
         case fetch_parent_tops(Mod, ParentNodes, Seed, State) of
@@ -277,7 +277,8 @@ fetch_block(FetchFun,
                            PrevHash, Receiver) of
                 {ok, Commitments} ->
                     {ok, {aec_parent_chain_block:set_commitments(Block, Commitments), Node}};
-                {error, _} = Err -> Err
+                {error, _} = Err ->
+                    Err
             end;
         Err ->
             Err
