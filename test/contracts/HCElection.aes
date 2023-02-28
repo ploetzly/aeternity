@@ -73,5 +73,5 @@ main contract HCElection =
     if (List.contains(addr, commitments))
         ((addr, stake) :: accum, stake + total_s, commitments)
     else
-        (accum, stake, commitments)
+        (accum, total_s, commitments)
 
