@@ -330,7 +330,7 @@ generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := _E
                                                            CallData,
                                                            "elect_next",
                                                            0),
-            {tuple, {{address, Leader}, _Stake}}  = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
+            {tuple, {{address, Leader}, Stake}}  = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
             SignModule = get_sign_module(),
             case SignModule:set_candidate(Leader) of
                 {error, key_not_found} ->
@@ -339,7 +339,8 @@ generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := _E
                 ok ->
                     Candidate1 = aec_headers:set_beneficiary(Candidate, Leader),
                     Candidate2 = aec_headers:set_miner(Candidate1, Leader),
-                    {ok, Signature} = SignModule:produce_key_header_signature(Candidate2, Leader),
+                    Candidate3 = aec_headers:set_target(Candidate2, aeminer_pow:integer_to_scientific(Stake)),
+                    {ok, Signature} = SignModule:produce_key_header_signature(Candidate3, Leader),
                     %% the signature is 64 bytes. The seal is 168 bytes. We add 104 bytes at
                     %% the end of the signature
                     PaddingSize = seal_padding_size(),
