@@ -216,7 +216,8 @@ inspect_validator(_Config) ->
     {ok, _, ElectionContractState0} = get_election_contract_state_(Alice, TxEnv, Trees0),
     {tuple, {   StakingCT,
                 Entropy,
-                Leader
+                Leader,
+                _AddedDifficulty
                 }} = ElectionContractState0,
     {contract, StakingContractPubkey} = StakingCT,
     StakingContractPubkey = staking_contract_address(),
@@ -298,7 +299,8 @@ inspect_validator(_Config) ->
     {ok, _, ElectionContractState1} = get_election_contract_state_(Alice, TxEnv, Trees5),
     {tuple, {   StakingCT, %% same
                 Entropy, %% same
-                Leader2
+                Leader2,
+                _
                 }} = ElectionContractState1,
     {address, Alice} = Leader2, %% Alice is being elected as a leader
     %% give away some rewards; this changes the total staking power but does
@@ -377,7 +379,8 @@ inspect_two_validators(_Config) ->
     {ok, _, ElectionContractState0} = get_election_contract_state_(Alice, TxEnv, Trees0),
     {tuple, {   _StakingCT,
                 Entropy,
-                Leader
+                Leader,
+                _
                 }} = ElectionContractState0,
     {bytes, _} = Entropy,
     ElectionContractPubkey = election_contract_address(),

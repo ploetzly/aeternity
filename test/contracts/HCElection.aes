@@ -10,13 +10,15 @@ main contract HCElection =
   record state =
     { main_staking_ct       : MainStaking,
       entropy               : string,
-      leader                : address
+      leader                : address,
+      added_difficulty      : int
     }
 
   record get_state_response =
     { main_staking_ct       : MainStaking,
       entropy               : string,
-      leader                : address
+      leader                : address,
+      added_difficulty      : int
     }
 
   entrypoint init(main_staking_ct : MainStaking, entropy_str : string) =
@@ -54,9 +56,10 @@ main contract HCElection =
     state.leader
 
   entrypoint get_state() : get_state_response =
-    { main_staking_ct = state.main_staking_ct,
-      entropy         = state.entropy,
-      leader          = state.leader
+    { main_staking_ct   = state.main_staking_ct,
+      entropy           = state.entropy,
+      leader            = state.leader,
+      added_difficulty  = state.added_difficulty
       }
 
   function find_validator(validators, shot) =
