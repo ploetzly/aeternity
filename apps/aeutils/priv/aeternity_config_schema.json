@@ -1614,7 +1614,7 @@
                             "description" : "How many blocks (back from the top) should be scanned for reachable hashes",
                             "type" : "integer",
                             "minimum" : 50,
-                            "default" : 500
+                            "default" : 15000
                         },
                         "trees" : {
                             "description": "Which state trees to scan. Default: all of them",

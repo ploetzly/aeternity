@@ -89,11 +89,19 @@ new_with_dirty_backend(Hash) ->
 %% Calls and return values are only kept for one block.
 -spec prune(aec_blocks:height(), aec_trees:trees()) -> aec_trees:trees().
 prune(_,Trees) ->
-    aec_trees:set_calls(Trees, empty_with_backend()).
+    CTree = aec_trees:calls(Trees),
+    Empty = case has_backend(CTree) of
+                true  -> empty_with_backend();
+                false -> empty()
+            end,
+    aec_trees:set_calls(Trees, Empty).
 
 -spec prune_without_backend(aec_trees:trees()) -> aec_trees:trees().
 prune_without_backend(Trees) ->
     aec_trees:set_calls(Trees, empty()).
+
+has_backend(#call_tree{calls = CtTree}) ->
+    aeu_mtrees:has_backend(CtTree).
 
 -spec insert_call(aect_call:call(), tree()) -> tree().
 insert_call(Call, Tree) ->
