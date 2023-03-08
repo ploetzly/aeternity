@@ -555,7 +555,7 @@ single_validator_gets_elected_every_time(_Config) ->
         fun(Height, TreesAccum) ->
             %% Alice is expected to be next
             TxEnvPrev = aetx_env:set_height(TxEnv, Height - 1),
-            {ok, _ , {address, Alice}} = elect_next_(Alice, TxEnvPrev,
+            {ok, _ , {tuple, {{address, Alice}, _}}} = elect_next_(Alice, TxEnvPrev,
                                                      TreesAccum),
             TxEnv1 = aetx_env:set_height(TxEnv, Height),
             {ok, TreesAccum1, {tuple, {}}} = elect_(?OWNER_PUBKEY, TxEnv1, TreesAccum),
@@ -570,7 +570,7 @@ single_validator_gets_elected_every_time(_Config) ->
             %% Alice is expected to be next
             TxEnvPrev = aetx_env:set_height(TxEnv, Height - 1),
             {ok, TreesAccum1, {tuple, {}}} = reward_(Alice, 1000, ?OWNER_PUBKEY, TxEnvPrev, TreesAccum),
-            {ok, _ , {address, Alice}} = elect_next_(Alice, TxEnvPrev, TreesAccum1),
+            {ok, _ , {tuple, {{address, Alice}, _}}} = elect_next_(Alice, TxEnvPrev, TreesAccum1),
             TxEnv1 = aetx_env:set_height(TxEnv, Height),
             {ok, TreesAccum2, {tuple, {}}} = elect_(?OWNER_PUBKEY, TxEnv1, TreesAccum1),
             {ok, _, {address, Alice}} = leader_(Alice, TxEnv1, TreesAccum2),
@@ -1872,11 +1872,11 @@ entropy_impacts_leader_election(_Config) ->
     Entropy1 = Hash("A"),
     TopHash = aetx_env:key_hash(TxEnv),
     Commitments = commitments(#{TopHash => [pubkey(?ALICE), pubkey(?BOB)]}),
-    {ok, Trees4, {tuple, {}}} = hc_elect_(Entropy1, Commitments, ?OWNER_PUBKEY, TxEnv, Trees3),
+    {ok, Trees4, {tuple, {{address, Bob}, _}}} = hc_elect_(Entropy1, Commitments, ?OWNER_PUBKEY, TxEnv, Trees3),
     {ok, _, {address, Bob}} = leader_(?OWNER_PUBKEY, TxEnv, Trees4),
     %% same context, different entropy leads to different leader
     Entropy2 = Hash("a"),
-    {ok, Trees5, {tuple, {}}} = hc_elect_(Entropy2, Commitments, ?OWNER_PUBKEY, TxEnv, Trees3),
+    {ok, Trees5, {tuple, {{address, Alice}, _}}} = hc_elect_(Entropy2, Commitments, ?OWNER_PUBKEY, TxEnv, Trees3),
     {ok, _, {address, Alice}} = leader_(?OWNER_PUBKEY, TxEnv, Trees5),
     ok.
 
@@ -1912,7 +1912,7 @@ commitments_determine_who_participates(_Config) ->
                 fun(Char) ->
                     Entropy = Hash([Char]),
                     Commitments = commitments(#{TopHash => [Pubkey]}),
-                    {ok, Trees4, {tuple, {}}} = hc_elect_(Entropy, Commitments, ?OWNER_PUBKEY, TxEnv, Trees3),
+                    {ok, Trees4, {tuple, {{address, Pubkey}, _}}} = hc_elect_(Entropy, Commitments, ?OWNER_PUBKEY, TxEnv, Trees3),
                     {ok, _, {address, Pubkey}} = leader_(?OWNER_PUBKEY, TxEnv, Trees4),
                     ok
                 end,
@@ -2050,7 +2050,7 @@ test_elect_calls(StartHeight, GenerenationsCnt, TxEnv, StartTrees) ->
     lists:foldl(
         fun(Height, {TreesAccum1, Ls}) ->
             TxEnvPrev = aetx_env:set_height(TxEnv, Height - 1),
-            {ok, _ , {address, ExpectedNextLeader}} = elect_next_(?OWNER_PUBKEY, TxEnvPrev, TreesAccum1),
+            {ok, _ , {tuple, {{address, ExpectedNextLeader}, _}}} = elect_next_(?OWNER_PUBKEY, TxEnvPrev, TreesAccum1),
             TxEnv1 = aetx_env:set_height(TxEnv, Height),
             {ok, TreesAccum2, {tuple, {}}} = elect_(?OWNER_PUBKEY, TxEnv1, TreesAccum1),
             {ok, _, {address, NextLeader}} = leader_(?OWNER_PUBKEY, TxEnv1, TreesAccum2),
