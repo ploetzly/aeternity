@@ -53,7 +53,8 @@
         ]).
 
 -export([ entropy_impacts_leader_election/1,
-          commitments_determine_who_participates/1
+          commitments_determine_who_participates/1,
+          added_stake_power/1
         ]).
 
 -include_lib("aecontract/include/hard_forks.hrl").
@@ -160,7 +161,8 @@ groups() ->
        ]},
       {hc_election, [sequence],
        [ entropy_impacts_leader_election,
-         commitments_determine_who_participates
+         commitments_determine_who_participates,
+         added_stake_power
        ]}
     ].
 
@@ -1922,6 +1924,74 @@ commitments_determine_who_participates(_Config) ->
     Test(pubkey(?BOB)),
     ok.
 
+added_stake_power(_Config) ->
+    Alice = pubkey(?ALICE),
+    Bob = pubkey(?BOB),
+    Carol = pubkey(?CAROL), %% will be offline
+    Trees0 = genesis_trees(?HC),
+    TxEnv = aetx_env:tx_env(?GENESIS_HEIGHT),
+    AliceAmt = ?VALIDATOR_MIN + 1,
+    BobAmt = CarolAmt = ?VALIDATOR_MIN,
+    Trees1 =
+        lists:foldl(
+            fun({Pubkey,  Amount}, TreesAccum) ->
+                {ok, TreesAccum1, _} = new_validator_(Pubkey, Amount, TxEnv,
+                                                      TreesAccum),
+                TreesAccum1
+            end,
+            Trees0,
+            [{Alice, AliceAmt},
+            {Bob, BobAmt},
+            {Carol, CarolAmt}]),
+    {ok, Trees2, {tuple, {}}} = set_validator_online_(Alice, TxEnv, Trees1),
+    {ok, Trees3, {tuple, {}}} = set_validator_online_(Bob, TxEnv, Trees2),
+    Hash =
+        fun([C]) ->
+            list_to_binary(lists:duplicate(32, C));
+           (S) when length(S) =:= 32 ->
+            list_to_binary(S)
+        end,
+    TopHash = aetx_env:key_hash(TxEnv),
+    TestOnlyOneCommiter =
+        fun(Pubkey) ->
+            lists:foreach(
+                fun(Char) ->
+                    Entropy = Hash([Char]),
+                    TopHash = aetx_env:key_hash(TxEnv),
+                    Commitments = commitments(#{TopHash => [Pubkey]}),
+                    Expected = [{tuple, {{address, Bob}, BobAmt}}, {tuple, {{address, Alice}, AliceAmt}}],
+                    {ok, _, Expected} = sorted_validators_(Alice, TxEnv, Trees3),
+                    {ok, Trees4, {tuple, {{address, Pubkey}, StakePower}}} = hc_elect_(Entropy, Commitments, ?OWNER_PUBKEY, TxEnv, Trees3),
+                    ExpectedStakingPower =
+                        case Pubkey of
+                            Alice -> AliceAmt;
+                            Bob -> BobAmt
+                        end,
+                    {StakePower, StakePower} = {StakePower, ExpectedStakingPower},
+                    {ok, _, {address, Pubkey}} = leader_(?OWNER_PUBKEY, TxEnv, Trees4),
+                    ok
+                end,
+                lists:seq(65, 122)) %% A to z
+        end,
+    TestOnlyOneCommiter(pubkey(?ALICE)),
+    TestOnlyOneCommiter(pubkey(?BOB)),
+    %% test two commiters
+    lists:foreach(
+        fun(Char) ->
+            Entropy = Hash([Char]),
+            TopHash = aetx_env:key_hash(TxEnv),
+            Commitments = commitments(#{TopHash => [Alice, Bob]}),
+            Expected = [{tuple, {{address, Bob}, BobAmt}}, {tuple, {{address, Alice}, AliceAmt}}],
+            {ok, _, Expected} = sorted_validators_(Alice, TxEnv, Trees3),
+            {ok, Trees4, {tuple, {{address, Pubkey}, StakePower}}} = hc_elect_(Entropy, Commitments, ?OWNER_PUBKEY, TxEnv, Trees3),
+            ExpectedStakingPower = AliceAmt + BobAmt,
+            {StakePower, StakePower} = {StakePower, ExpectedStakingPower},
+            {ok, _, {address, Pubkey}} = leader_(?OWNER_PUBKEY, TxEnv, Trees4),
+            ok
+        end,
+        lists:seq(65, 122)), %% A to z
+    ok.
+
 set_up_accounts(Trees) ->
     lists:foldl(fun set_up_account/2,
                 Trees,
@@ -2130,6 +2200,11 @@ online_validators_(Caller, TxEnv, Trees0) ->
 offline_validators_(Caller, TxEnv, Trees0) ->
     ContractPubkey = staking_contract_address(),
     {ok, CallData} = aeb_fate_abi:create_calldata("offline_validators", []),
+    call_contract(ContractPubkey, Caller, CallData, 0, TxEnv, Trees0).
+
+sorted_validators_(Caller, TxEnv, Trees0) ->
+    ContractPubkey = staking_contract_address(),
+    {ok, CallData} = aeb_fate_abi:create_calldata("sorted_validators", []),
     call_contract(ContractPubkey, Caller, CallData, 0, TxEnv, Trees0).
 
 elect_next_(Caller, TxEnv, Trees0) ->
