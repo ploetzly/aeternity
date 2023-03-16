@@ -535,7 +535,24 @@ get_beneficiary(Consensus) ->
     Consensus:beneficiary().
 
 get_next_beneficiary(Consensus) ->
-    Consensus:next_beneficiary().
+    TopHeader = aec_chain:top_header(),
+    get_next_beneficiary(Consensus, TopHeader).
+
+get_next_beneficiary(Consensus, TopHeader) ->
+    case Consensus:allow_lazy_leader() of
+        {true, LazyLeaderTimeDelta, LazyLeader} ->
+            LastBlockTime = aec_headers:time_in_msecs(TopHeader),
+            Now = aeu_time:now_in_msecs(),
+            TimeDelta = Now - LastBlockTime,
+            case TimeDelta > LazyLeaderTimeDelta of
+                true ->
+                    LazyLeader;
+                false ->
+                    Consensus:next_beneficiary()
+            end;
+         false ->
+            Consensus:next_beneficiary()
+    end.
 
 get_beneficiary() ->
     TopHeader = aec_chain:top_header(),
@@ -545,7 +562,7 @@ get_beneficiary() ->
 get_next_beneficiary() ->
     TopHeader = aec_chain:top_header(),
     Consensus = aec_consensus:get_consensus_module_at_height(aec_headers:height(TopHeader) + 1),
-    get_next_beneficiary(Consensus).
+    get_next_beneficiary(Consensus, TopHeader).
 
 note_rollback(Info) ->
     gen_server:call(?SERVER, {note_rollback, Info}).

@@ -61,6 +61,7 @@
         %% rewards and signing
         , beneficiary/0
         , next_beneficiary/0
+        , allow_lazy_leader/0
         , get_sign_module/0
         , get_type/0
         , get_block_producer_configs/0
@@ -239,6 +240,8 @@ key_header_difficulty(_) ->
 beneficiary() -> aec_consensus_bitcoin_ng:beneficiary().
 
 next_beneficiary() -> aec_consensus_bitcoin_ng:next_beneficiary().
+
+allow_lazy_leader() -> false.
 
 get_sign_module() -> aec_consensus_bitcoin_ng:get_sign_module().
 

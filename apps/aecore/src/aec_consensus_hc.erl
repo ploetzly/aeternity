@@ -67,6 +67,7 @@
         %% rewards and signing
         , beneficiary/0
         , next_beneficiary/0
+        , allow_lazy_leader/0
         , get_sign_module/0
         , get_type/0
         , get_block_producer_configs/0
@@ -285,8 +286,15 @@ validate_key_header_seal(Header, _Protocol) ->
     Validators = [ fun seal_correct_padding/3
                  , fun seal_correct_signature/3
                  ],
-    Res = aeu_validation:run(Validators, [Header, Signature, Padding]),
-    Res.
+    case aeu_validation:run(Validators, [Header, Signature, Padding]) of
+        ok -> ok;
+        {error, signature_verification_failed} = Err ->
+            case aec_headers:difficulty(Header) of
+                0 -> ok;
+                _ -> Err
+            end;
+        {error, _} = Err -> Err
+    end.
 
 seal_correct_padding(_Header, _Signature, Padding) ->
     PaddingSize = seal_padding_size(),
@@ -587,6 +595,8 @@ next_beneficiary() ->
             timer:sleep(1000),
             {error, not_in_cache}
     end.
+
+allow_lazy_leader() -> {true, 1000, <<>>}. %% TODO!!!!: interval and key!!!
 
 get_sign_module() -> aec_preset_keys.
 

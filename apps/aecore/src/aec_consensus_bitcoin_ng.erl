@@ -56,6 +56,7 @@
         %% rewards and signing
         , beneficiary/0
         , next_beneficiary/0
+        , allow_lazy_leader/0
         , get_sign_module/0
         , get_type/0
         , get_block_producer_configs/0
@@ -522,6 +523,8 @@ beneficiary() ->
     end.
 
 next_beneficiary() -> beneficiary().
+
+allow_lazy_leader() -> false.
 
 get_sign_module() -> aec_keys.
 
