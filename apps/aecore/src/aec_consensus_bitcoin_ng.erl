@@ -56,10 +56,12 @@
         %% rewards and signing
         , beneficiary/0
         , next_beneficiary/0
+        , allow_lazy_leader/0
+        , pick_lazy_leader/0
         , get_sign_module/0
         , get_type/0
         , get_block_producer_configs/0
-        , is_leader_valid/3
+        , is_leader_valid/4
         ]).
 
 -export([ get_whitelist/0
@@ -523,13 +525,16 @@ beneficiary() ->
 
 next_beneficiary() -> beneficiary().
 
+allow_lazy_leader() -> false.
+pick_lazy_leader() -> error.
+
 get_sign_module() -> aec_keys.
 
 get_type() -> pow.
 
 get_block_producer_configs() -> aec_mining:get_miner_configs().
 
-is_leader_valid(_Node, _Trees, _TxEnv) ->
+is_leader_valid(_Node, _Trees, _TxEnv, _PrevNode) ->
     true.
 
 load_whitelist() ->

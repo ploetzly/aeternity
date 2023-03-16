@@ -832,7 +832,8 @@ validate_generation_leader(Node, Trees, Env) ->
     case node_is_key_block(Node) of
         true  ->
             ConsensusModule = aec_block_insertion:node_consensus(Node),
-            case ConsensusModule:is_leader_valid(Node, Trees, Env) of
+            PrevKeyNode = db_get_node(node_prev_key_hash(Node)),
+            case ConsensusModule:is_leader_valid(Node, Trees, Env, PrevKeyNode) of
                 true -> ok;
                 false -> {error, invalid_leader}
             end;

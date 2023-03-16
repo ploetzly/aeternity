@@ -61,10 +61,12 @@
         %% rewards and signing
         , beneficiary/0
         , next_beneficiary/0
+        , allow_lazy_leader/0
+        , pick_lazy_leader/0
         , get_sign_module/0
         , get_type/0
         , get_block_producer_configs/0
-        , is_leader_valid/3
+        , is_leader_valid/4
         ]).
 
 -include_lib("aecontract/include/hard_forks.hrl").
@@ -240,6 +242,10 @@ beneficiary() -> aec_consensus_bitcoin_ng:beneficiary().
 
 next_beneficiary() -> aec_consensus_bitcoin_ng:next_beneficiary().
 
+allow_lazy_leader() -> false.
+
+pick_lazy_leader() -> error.
+
 get_sign_module() -> aec_consensus_bitcoin_ng:get_sign_module().
 
 get_type() -> aec_consensus_bitcoin_ng:get_type().
@@ -247,6 +253,6 @@ get_type() -> aec_consensus_bitcoin_ng:get_type().
 
 get_block_producer_configs() -> aec_consensus_bitcoin_ng:get_block_producer_configs().
 
-is_leader_valid(_Node, _Trees, _TxEnv) ->
+is_leader_valid(_Node, _Trees, _TxEnv, _PrevNode) ->
     true.
 

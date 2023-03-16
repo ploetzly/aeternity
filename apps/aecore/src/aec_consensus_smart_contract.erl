@@ -66,10 +66,12 @@
         %% rewards and signing
         , beneficiary/0
         , next_beneficiary/0
+        , allow_lazy_leader/0
+        , pick_lazy_leader/0
         , get_sign_module/0
         , get_type/0
         , get_block_producer_configs/0
-        , is_leader_valid/3
+        , is_leader_valid/4
         ]).
 
 -include_lib("aecontract/include/hard_forks.hrl").
@@ -432,6 +434,10 @@ next_beneficiary() ->
             error({failed_to_elect_new_leader, What})
     end.
 
+allow_lazy_leader() -> false.
+
+pick_lazy_leader() -> error.
+
 get_sign_module() -> aec_preset_keys.
 
 get_type() -> pos.
@@ -439,7 +445,7 @@ get_type() -> pos.
 get_block_producer_configs() -> [{instance_not_used,
                                   #{expected_key_block_rate => expected_key_block_rate()}}].
 
-is_leader_valid(Node, Trees, TxEnv) ->
+is_leader_valid(Node, Trees, TxEnv, PrevNode) ->
     Header = aec_block_insertion:node_header(Node),
     {ok, CD} = aeb_fate_abi:create_calldata("leader", []),
     CallData = aeser_api_encoder:encode(contract_bytearray, CD),
