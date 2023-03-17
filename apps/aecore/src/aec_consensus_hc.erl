@@ -596,7 +596,9 @@ next_beneficiary() ->
             {error, not_in_cache}
     end.
 
-allow_lazy_leader() -> {true, 1000, <<>>}. %% TODO!!!!: interval and key!!!
+lazy_leader_time_delta() -> 1000.
+
+allow_lazy_leader() -> {true, lazy_leader_time_delta(), <<>>}. %% TODO!!!!: interval and key!!!
 
 get_sign_module() -> aec_preset_keys.
 
