@@ -539,19 +539,25 @@ get_next_beneficiary(Consensus) ->
     get_next_beneficiary(Consensus, TopHeader).
 
 get_next_beneficiary(Consensus, TopHeader) ->
-    case Consensus:allow_lazy_leader() of
-        {true, LazyLeaderTimeDelta, LazyLeader} ->
-            LastBlockTime = aec_headers:time_in_msecs(TopHeader),
-            Now = aeu_time:now_in_msecs(),
-            TimeDelta = Now - LastBlockTime,
-            case TimeDelta > LazyLeaderTimeDelta of
-                true ->
-                    LazyLeader;
-                false ->
-                    Consensus:next_beneficiary()
-            end;
-         false ->
-            Consensus:next_beneficiary()
+    case Consensus:next_beneficiary() of
+        {ok, _L} = OK -> OK;
+        {error, not_in_cache} = Err -> Err;
+        {error, not_leader} = NotLeader ->
+            case Consensus:allow_lazy_leader() of
+                {true, LazyLeaderTimeDelta} ->
+                    LastBlockTime = aec_headers:time_in_msecs(TopHeader),
+                    Now = aeu_time:now_in_msecs(),
+                    TimeDelta = Now - LastBlockTime,
+                    case TimeDelta > LazyLeaderTimeDelta of
+                        true ->
+                            case Consensus:pick_lazy_leader() of
+                                error -> NotLeader;
+                                {ok, _L} = OK -> OK
+                            end;
+                        false ->
+                            NotLeader
+                    end
+            end
     end.
 
 get_beneficiary() ->

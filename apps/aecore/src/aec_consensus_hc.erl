@@ -68,10 +68,11 @@
         , beneficiary/0
         , next_beneficiary/0
         , allow_lazy_leader/0
+        , pick_lazy_leader/0
         , get_sign_module/0
         , get_type/0
         , get_block_producer_configs/0
-        , is_leader_valid/3
+        , is_leader_valid/4
         ]).
 
 %% HC specific API
@@ -290,7 +291,7 @@ validate_key_header_seal(Header, _Protocol) ->
         ok -> ok;
         {error, signature_verification_failed} = Err ->
             case aec_headers:difficulty(Header) of
-                0 -> ok;
+                0 -> ok; %% TODO: is this safe!?
                 _ -> Err
             end;
         {error, _} = Err -> Err
@@ -596,9 +597,20 @@ next_beneficiary() ->
             {error, not_in_cache}
     end.
 
-lazy_leader_time_delta() -> 1000.
+lazy_leader_time_delta() -> 1000. %% TODO!!!!: interval and key!!!
 
-allow_lazy_leader() -> {true, lazy_leader_time_delta(), <<>>}. %% TODO!!!!: interval and key!!!
+allow_lazy_leader() ->
+    {true, lazy_leader_time_delta()}.
+
+pick_lazy_leader() ->
+    SignModule = get_sign_module(),
+    case SignModule:set_random_candidate() of
+        {error, key_not_found} ->
+            timer:sleep(1000),
+            error;
+        {ok, LazyLeader} ->
+            {ok, LazyLeader}
+    end.
 
 get_sign_module() -> aec_preset_keys.
 
@@ -607,18 +619,24 @@ get_type() -> pos.
 get_block_producer_configs() -> [{instance_not_used,
                                   #{expected_key_block_rate => expected_key_block_rate()}}].
 
-is_leader_valid(Node, Trees, TxEnv) ->
+is_leader_valid(Node, Trees, TxEnv, PrevNode) ->
     Header = aec_block_insertion:node_header(Node),
-    {ok, CD} = aeb_fate_abi:create_calldata("leader", []),
-    CallData = aeser_api_encoder:encode(contract_bytearray, CD),
-    case call_consensus_contract_(?ELECTION_CONTRACT, TxEnv, Trees, CallData, "leader", 0) of
-        {ok, _Trees1, Call} ->
-            {address, ExpectedLeader} = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
-            Leader = aec_headers:miner(Header),
-            ExpectedLeader =:= Leader;
-        {error, What} ->
-            lager:info("Block validation failed with a reason ~p", [What]),
-            false
+    PrevHeader = aec_block_insertion:node_header(PrevNode),
+    TimeDelta = aec_headers:time_in_msecs(Header) - aec_headers:time_in_msecs(PrevHeader),
+    case TimeDelta > lazy_leader_time_delta() of
+         true -> true;
+         false ->
+            {ok, CD} = aeb_fate_abi:create_calldata("leader", []),
+            CallData = aeser_api_encoder:encode(contract_bytearray, CD),
+            case call_consensus_contract_(?ELECTION_CONTRACT, TxEnv, Trees, CallData, "leader", 0) of
+                {ok, _Trees1, Call} ->
+                    {address, ExpectedLeader} = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
+                    Leader = aec_headers:miner(Header),
+                    ExpectedLeader =:= Leader;
+                {error, What} ->
+                    lager:info("Block validation failed with a reason ~p", [What]),
+                    false
+        end
     end.
 
 parent_chain_validators(TxEnv, Trees) ->

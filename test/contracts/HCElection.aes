@@ -35,6 +35,11 @@ main contract HCElection =
     put(state{ leader = new_leader, entropy = entropy_str, added_stake = added_staking_power})
     (new_leader, added_staking_power)
 
+  stateful entrypoint lazy_leader(new_leader : address) =
+    assert_protocol_call()
+    put(state{ leader = new_leader, entropy = "lazy_leader", added_stake = 0})
+    (new_leader, 0)
+
   entrypoint elect_next(entropy_str : string, commitments : map(hash, list(address))) =
     let (leader, staking_power) = elect_(entropy_str, commitments)
     (leader, staking_power)
