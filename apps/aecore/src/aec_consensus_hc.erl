@@ -307,9 +307,10 @@ validate_key_header_seal(Header, _Protocol) ->
 seal_correct_padding(_Header, _Signature, Padding) ->
     PaddingSize = seal_padding_size(),
     ExpectedPadding = lists:duplicate(PaddingSize, 0),
-    case Padding =/= ExpectedPadding of
-        true -> {error, {erroneous_seal, Padding, ExpectedPadding}};
-        false -> ok
+    ExpectedPaddingLazy = [1 | lists:duplicate(PaddingSize - 1, 0)],
+    case Padding =:= ExpectedPadding orelse Padding =:= ExpectedPaddingLazy of
+        true -> ok;
+        false -> {error, {erroneous_seal, Padding, ExpectedPadding, ExpectedPaddingLazy}}
     end.
 
 seal_correct_signature(Header, Signature, _Padding) ->
@@ -324,20 +325,10 @@ seal_correct_signature(Header, Signature, _Padding) ->
 generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := _Expected} = _Config, _) ->
     case aec_parent_chain_cache:get_block_by_height(PCHeight) of
         {ok, Block} ->
-            Entropy = aec_parent_chain_block:hash(Block),
-            CommitmentsSophia = encode_commtiments(Block),
             {TxEnv, Trees} = aetx_env:tx_env_and_trees_from_top(aetx_transaction),
-            {ok, CD} = aeb_fate_abi:create_calldata("elect_next",
-                                                    [aefa_fate_code:encode_arg({string, Entropy}),
-                                                     CommitmentsSophia
-                                                    ]),
-            CallData = aeser_api_encoder:encode(contract_bytearray, CD),
-            {ok, _Trees1, Call} = call_consensus_contract_(?ELECTION_CONTRACT,
-                                                           TxEnv, Trees,
-                                                           CallData,
-                                                           "elect_next",
-                                                           0),
-            {tuple, {{address, Leader}, Stake}}  = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
+            {Leader, Stake} = call_elect_next_or_lazy_leader(Block, TxEnv, Trees),
+            CandidateLeader = aec_headers:beneficiary(Candidate),
+            CandidateLeader = Leader,
             SignModule = get_sign_module(),
             case SignModule:set_candidate(Leader) of
                 {error, key_not_found} ->
@@ -353,21 +344,20 @@ generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := _E
                     PaddingSize = seal_padding_size(),
                     Padding = << <<E:32>> || E <- lists:duplicate(PaddingSize, 0)>>,
                     Seal = aec_headers:deserialize_pow_evidence_from_binary(<<Signature/binary, Padding/binary>>),
-                    {continue_mining, {ok, Seal}}
+                    {continue_mining, {ok, {Seal, Leader, Stake}}}
             end;
         {error, _} ->
             timer:sleep(1000),
             {continue_mining, {error, no_solution} }
     end.
 
-set_key_block_seal(KeyBlock0, Seal) ->
-    {TxEnv, Trees} = aetx_env:tx_env_and_trees_from_top(aetx_transaction),
-    Height0 = aetx_env:height(TxEnv),
-    Height = Height0 + 1,
-    PCHeight = pc_height(Height),
-    {ok, Block} = aec_parent_chain_cache:get_block_by_height(PCHeight),
-    Entropy = aec_parent_chain_block:hash(Block),
-    CommitmentsSophia = encode_commtiments(Block),
+set_key_block_seal(KeyBlock0, {Seal, Leader, Stake}) ->
+    KeyBlock3 = aec_blocks:set_target(KeyBlock0, aeminer_pow:integer_to_scientific(Stake)),
+    aec_blocks:set_key_seal(KeyBlock3, Seal).
+
+call_elect_next_or_lazy_leader(PCBlock, TxEnv, Trees) ->
+    Entropy = aec_parent_chain_block:hash(PCBlock),
+    CommitmentsSophia = encode_commtiments(PCBlock),
     {ok, CD} = aeb_fate_abi:create_calldata("elect_next",
                                             [aefa_fate_code:encode_arg({string, Entropy}),
                                              CommitmentsSophia
@@ -379,10 +369,7 @@ set_key_block_seal(KeyBlock0, Seal) ->
                                                     "elect_next",
                                                     0),
     {tuple, {{address, Leader}, Stake}}  = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
-    KeyBlock1 = aec_blocks:set_beneficiary(KeyBlock0, Leader),
-    KeyBlock2 = aec_blocks:set_miner(KeyBlock1, Leader),
-    KeyBlock3 = aec_blocks:set_target(KeyBlock2, aeminer_pow:integer_to_scientific(Stake)),
-    aec_blocks:set_key_seal(KeyBlock3, Seal).
+    {Leader, Stake}.
 
 nonce_for_sealing(Header) ->
     Height = aec_headers:height(Header),
