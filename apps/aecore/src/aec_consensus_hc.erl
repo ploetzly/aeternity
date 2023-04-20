@@ -188,7 +188,11 @@ dirty_validate_micro_node_with_ctx(_Node, _Block, _Ctx) -> ok.
 %% -------------------------------------------------------------------
 %% Custom state transitions
 state_pre_transform_key_node_consensus_switch(_Node, Trees) -> Trees.
-state_pre_transform_key_node(_Node, Trees) ->
+state_pre_transform_key_node(Node, Trees) ->
+    Header = aec_block_insertion:node_header(Node),
+    %% TODO
+    Beneficiary = aec_headers:beneficiary(Header),
+
     {TxEnv, _Trees} = aetx_env:tx_env_and_trees_from_top(aetx_transaction),
     %% TODO: discuss which is the correct height to pass: the new or the
     %% previous one. At this point since there is no key block hash yet, it
@@ -210,21 +214,27 @@ state_pre_transform_key_node(_Node, Trees) ->
             CallData = aeser_api_encoder:encode(contract_bytearray, CD),
             case call_consensus_contract_(?ELECTION_CONTRACT, TxEnv, Trees, CallData, "elect", 0) of
                 {ok, Trees1, Call} ->
-                    {tuple, {{address, Leader}, AddedStake}}  = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
-                    aeu_ets_cache:reinit(
-                        ?ETS_CACHE_TABLE,
-                        current_leader,
-                        fun () -> Leader end ),
-                    aeu_ets_cache:reinit(
-                        ?ETS_CACHE_TABLE,
-                        added_stake,
-                        fun () -> AddedStake end ),
-                    Trees1;
+                    case aeb_fate_encoding:deserialize(aect_call:return_value(Call)) of
+                        {tuple, {{address, Beneficiary}, AddedStake}} -> %% same beneficiary!
+                            cache(Beneficiary, AddedStake),
+                            Trees1;
+                        crash -> Trees1
+                    end;
                 {error, What} ->
                     %% maybe a softer approach than crash and burn?
                     aec_conductor:throw_error({failed_to_elect_new_leader, What})
             end
     end.
+cache(Leader, AddedStake) ->
+    aeu_ets_cache:reinit(
+        ?ETS_CACHE_TABLE,
+        current_leader,
+        fun () -> Leader end ),
+    aeu_ets_cache:reinit(
+        ?ETS_CACHE_TABLE,
+        added_stake,
+        fun () -> AddedStake end ),
+    ok.
 
 state_pre_transform_micro_node(_Node, Trees) -> Trees.
 
@@ -323,37 +333,24 @@ seal_correct_signature(Header, Signature, _Padding) ->
     end.
 
 generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := _Expected} = _Config, _) ->
-    case aec_parent_chain_cache:get_block_by_height(PCHeight) of
-        {ok, Block} ->
-            {TxEnv, Trees} = aetx_env:tx_env_and_trees_from_top(aetx_transaction),
-            {Leader, Stake} = call_elect_next_or_lazy_leader(Block, TxEnv, Trees),
-            CandidateLeader = aec_headers:beneficiary(Candidate),
-            CandidateLeader = Leader,
-            SignModule = get_sign_module(),
-            case SignModule:set_candidate(Leader) of
-                {error, key_not_found} ->
-                    timer:sleep(1000),
-                    {continue_mining, {error, no_solution} };
-                ok ->
-                    Candidate1 = aec_headers:set_beneficiary(Candidate, Leader),
-                    Candidate2 = aec_headers:set_miner(Candidate1, Leader),
-                    Candidate3 = aec_headers:set_target(Candidate2, aeminer_pow:integer_to_scientific(Stake)),
-                    {ok, Signature} = SignModule:produce_key_header_signature(Candidate3, Leader),
-                    %% the signature is 64 bytes. The seal is 168 bytes. We add 104 bytes at
-                    %% the end of the signature
-                    PaddingSize = seal_padding_size(),
-                    Padding = << <<E:32>> || E <- lists:duplicate(PaddingSize, 0)>>,
-                    Seal = aec_headers:deserialize_pow_evidence_from_binary(<<Signature/binary, Padding/binary>>),
-                    {continue_mining, {ok, {Seal, Leader, Stake}}}
-            end;
-        {error, _} ->
+    Leader = aec_headers:beneficiary(Candidate),
+    SignModule = get_sign_module(),
+    case SignModule:set_candidate(Leader) of
+        {error, key_not_found} ->
             timer:sleep(1000),
-            {continue_mining, {error, no_solution} }
+            {continue_mining, {error, no_solution} };
+        ok ->
+            {ok, Signature} = SignModule:produce_key_header_signature(Candidate, Leader),
+            %% the signature is 64 bytes. The seal is 168 bytes. We add 104 bytes at
+            %% the end of the signature
+            PaddingSize = seal_padding_size(),
+            Padding = << <<E:32>> || E <- lists:duplicate(PaddingSize, 0)>>,
+            Seal = aec_headers:deserialize_pow_evidence_from_binary(<<Signature/binary, Padding/binary>>),
+            {continue_mining, {ok, Seal}}
     end.
 
-set_key_block_seal(KeyBlock0, {Seal, Leader, Stake}) ->
-    KeyBlock3 = aec_blocks:set_target(KeyBlock0, aeminer_pow:integer_to_scientific(Stake)),
-    aec_blocks:set_key_seal(KeyBlock3, Seal).
+set_key_block_seal(KeyBlock, Seal) ->
+    aec_blocks:set_key_seal(KeyBlock, Seal).
 
 call_elect_next_or_lazy_leader(PCBlock, TxEnv, Trees) ->
     Entropy = aec_parent_chain_block:hash(PCBlock),
