@@ -46,8 +46,10 @@
         ]).
 
 -export([ cache_write_through/1
+        , collect_block_witness/1
         , set_var/4
         , tx_env/1
+        , witness/1
         ]).
 
 -include("aeprimop_state.hrl").
@@ -107,6 +109,7 @@ new(Trees, TxEnv) ->
           , height = aetx_env:height(TxEnv)
           , tx_env = TxEnv
           , protocol = aetx_env:consensus_version(TxEnv)
+          , witness = aec_witness:new()
           }.
 
 -spec final_trees(state()) -> aec_trees().
@@ -117,6 +120,9 @@ final_trees(State) ->
 -spec tx_env(state()) -> aetx_env().
 tx_env(#state{tx_env = TxEnv}) ->
     TxEnv.
+
+witness(#state{witness = Witness}) ->
+    Witness.
 
 %%%===================================================================
 %%% Error handling
@@ -502,6 +508,45 @@ cache_write_through_fun({oracle_query, {_Pubkey, _Id}}, Query, Trees) ->
     OTrees = aec_trees:oracles(Trees),
     OTrees1 = aeo_state_tree:enter_query(Query, OTrees),
     aec_trees:set_oracles(Trees, OTrees1).
+
+%%%===================================================================
+%%% Add block witness entries for everything in the current cache
+-spec collect_block_witness(state()) -> state().
+collect_block_witness(#state{cache = C, witness = W} = S) ->
+    io:format(user, "Cache = ~p~n", [dict:to_list(C)]),
+    Witness = dict:fold(fun collect_block_witness_fun/3, W, C),
+    S#state{witness = Witness}.
+
+-spec collect_block_witness_fun({tag(), _}, object(), aec_witness:witness()) -> aec_witness:witness().
+collect_block_witness_fun({account, _Pubkey}, Account, Witness) ->
+    Key = aec_accounts:pubkey(Account),
+    aec_witness:add_account(Witness, Key);
+collect_block_witness_fun({auth_call, {_Pubkey, _Id}}, Call, Witness) ->
+    Key = aec_accounts:pubkey(Call),
+    aec_witness:add_account(Witness, Key);
+collect_block_witness_fun({call, _Id}, Call, Witness) ->
+    CallId = aect_call:id(Call),
+    ContractId = aect_call:contract_pubkey(Call),
+    Key = <<ContractId/binary, CallId/binary>>,
+    aec_witness:add_call(Witness, Key);
+collect_block_witness_fun({commitment, _Hash}, Commitment, Witness) ->
+    Key = aens_commitments:hash(Commitment),
+    aec_witness:add_ns(Witness, Key);
+collect_block_witness_fun({name_auction, _Hash}, Name, Witness) ->
+    Key = aens_auctions:hash(Name),
+    aec_witness:add_ns(Witness, Key);
+collect_block_witness_fun({name, _Hash}, Name, Witness) ->
+    Key = aens_names:hash(Name),
+    aec_witness:add_ns(Witness, Key);
+collect_block_witness_fun({oracle, _Pubkey}, Oracle, Witness) ->
+    Key = aeo_oracles:pubkey(Oracle),
+    aec_witness:add_oracle(Witness, Key);
+collect_block_witness_fun({oracle_query, {_Pubkey, _Id}}, Query, Witness) ->
+    OraclePubkey = aeo_query:oracle_pubkey(Query),
+    QueryId      = aeo_query:id(Query),
+    TreeId       = <<OraclePubkey/binary, QueryId/binary>>,
+    aec_witness:add_oracle(Witness, TreeId).
+
 
 %%%===================================================================
 %%% Variable environment

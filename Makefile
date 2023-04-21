@@ -253,7 +253,7 @@ VERSION:
 
 eunit-%: KIND=test
 eunit-%: internal-build
-	ERL_FLAGS="-args_file $(EUNIT_VM_ARGS) -config $(EUNIT_SYS_CONFIG) -network_id local_$*_testnet" $(REBAR) do eunit $(EUNIT_TEST_FLAGS)
+	ERL_FLAGS="-args_file $(EUNIT_VM_ARGS) -config $(EUNIT_SYS_CONFIG) -network_id local_$*_testnet" $(REBAR) do eunit --verbose $(EUNIT_TEST_FLAGS)
 
 eunit-latest: eunit-$(LATEST_PROTOCOL)
 

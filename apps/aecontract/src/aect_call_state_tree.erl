@@ -97,6 +97,7 @@ prune_without_backend(Trees) ->
 -spec insert_call(aect_call:call(), tree()) -> tree().
 insert_call(Call, Tree) ->
     CtId = aect_call:contract_pubkey(Call),
+    io:format(user, "insert_call() ~p~n",[CtId]),
     add_call(insert, CtId, Call, Tree).
 
 -spec enter_auth_call(aect_call:call(), tree()) -> tree().

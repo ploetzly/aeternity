@@ -16,6 +16,8 @@
 -define(MSG_MICRO_BLOCK, 11).
 -define(MSG_GENERATION, 12).
 -define(MSG_GET_HEADER_BY_HEIGHT, 15).
+-define(MSG_GET_POI, 16).
+-define(MSG_POI, 17).
 -define(MSG_GET_NODE_INFO, 125).
 -define(MSG_NODE_INFO, 126).
 -define(MSG_CLOSE, 127).
@@ -40,6 +42,8 @@
 -define(KEY_BLOCK_VSN, 1).
 -define(MICRO_BLOCK_VSN, 1).
 -define(GENERATION_VSN, 1).
+-define(GET_POI_VSN, 1).
+-define(POI_VSN, 1).
 -define(TXS_VSN, 1).
 -define(BLOCK_TXS_VSN, 1).
 -define(PEER_VSN, 1).

@@ -89,11 +89,12 @@ run_with_cache(Spec, Env, Cache) ->
 -endif.
 
 run(Spec, Env) ->
+    io:format(user, "TRYING TO RUN~n", []),
     try execute(setup_engine(Spec, Env)) of
         ES -> {ok, ES}
     catch
         throw:{?MODULE, revert, S, ES} -> {revert, S, ES};
-        throw:{?MODULE, E, ES} -> {error, E, ES}
+        throw:{?MODULE, E, ES} -> io:format(user, "ERROR ~p~n", [{error, E}]), {error, E, ES}
     end.
 
 get_trace(EngineState) ->
@@ -260,6 +261,7 @@ abort(E) -> throw({add_engine_state, E}).
 
 execute(EngineState) ->
     Instructions = aefa_engine_state:current_bb_instructions(EngineState),
+    io:format(user, "execute FA Instriuctions = ~p~n", [Instructions]),
     loop(Instructions, EngineState).
 
 loop(Instructions, EngineState) ->

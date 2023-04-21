@@ -82,8 +82,10 @@ client_request(emit_mb) ->
     {ok, MicroBlock, _} = aec_block_micro_candidate:create(TopHash),
     {ok, MicroBlockS} = aec_keys:sign_micro_block(MicroBlock),
     ok = aec_conductor:post_block(MicroBlockS),
+    lager:debug("consensus_request(~p) DONE", [emit_mb]),
     MicroBlockS;
 client_request({mine_blocks, NumBlocksToMine, Type}) ->
+    lager:debug("consensus_request(~p) is_leader: ~p", [{mine_blocks, NumBlocksToMine, Type}, aec_conductor:is_leader()]),
     case {aec_conductor:is_leader(), Type} of
         {_, any} ->
             %% Some test might expect to mine a tx - interleave KB with MB
@@ -119,6 +121,7 @@ mine_blocks_until_txs_on_chain(TxHashes, Max, Blocks) ->
             KB = client_request(emit_kb),
             mine_blocks_until_txs_on_chain(TxHashes, Max-1, [KB|Blocks]);
         true ->
+            
             MB = client_request(emit_mb),
             KB = client_request(emit_kb),
             NewAcc = [KB|Blocks],

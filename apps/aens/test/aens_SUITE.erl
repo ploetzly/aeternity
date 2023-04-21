@@ -234,6 +234,7 @@ claim(Cfg) ->
     none       = aens_state_tree:lookup_commitment(CHash, NTrees),
     {value, N} = aens_state_tree:lookup_name(NHash, NTrees),
     NHash   = aens_names:hash(N),
+    ct:pal("NHash ~p\n", [NHash]),
     PubKey  = aens_names:owner_pubkey(N),
     claimed = aens_names:status(N),
     {PubKey, NHash, S2}.

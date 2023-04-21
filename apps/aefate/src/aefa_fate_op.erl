@@ -225,6 +225,7 @@ returnr(Arg0, EngineState) ->
     aefa_fate:pop_call_stack(ES1).
 
 call(Arg0, EngineState) ->
+    io:format(user, "aefa_fate_op:call/2 Arg0 = ~p~n", [Arg0]),
     {Fun, ES1}  = get_op_arg(Arg0, EngineState),
     Signature   = aefa_fate:get_function_signature(Fun, ES1),
     {Args, ES2} = aefa_fate:pop_args_from_signature(Signature, ES1),

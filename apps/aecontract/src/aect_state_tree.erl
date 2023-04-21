@@ -106,6 +106,7 @@ gc_cache(#contract_tree{contracts = CtTree} = Tree) ->
 insert_contract(Contract, Tree = #contract_tree{ contracts = CtTree }) ->
     Pubkey     = aect_contracts:pubkey(Contract),
     Serialized = aect_contracts:serialize(Contract),
+    io:format(user, "insert_contract() ~p~n",[Pubkey]),
     CtTree1    = aeu_mtrees:insert(Pubkey, Serialized, CtTree),
     CtTree2    = insert_store(Contract, CtTree1),
     Tree#contract_tree{ contracts = CtTree2 }.
@@ -120,6 +121,7 @@ delete_contract(PK, Tree = #contract_tree{ contracts = CtTree }) ->
 copy_contract_store(Contract, NewId, Tree = #contract_tree{ contracts = CtTree }) ->
     Id    = aect_contracts:compute_contract_store_id(NewId),
     Store = aect_contracts:state(Contract),
+    io:format(user, "copy_contract_store() ~p~n",[Id]),
     %% Write a value at the store id to make it possible to get it as a
     %% subtree.
     CtTree1 = aeu_mtrees:insert(Id, <<0>>, CtTree),
@@ -139,6 +141,7 @@ read_contract_store(StoreKey, #contract_tree{ contracts = CtTree }) ->
 
 insert_store(Contract, CtTree) ->
     Id = aect_contracts:store_id(Contract),
+    io:format(user, "insert_store() ~p~n",[Id]),
     Store = aect_contracts:state(Contract),
     %% Write a value at the store id to make it possible to get it as a
     %% subtree.
@@ -148,6 +151,7 @@ insert_store(Contract, CtTree) ->
 insert_store_nodes(Prefix, Writes, CtTree) ->
     Insert = fun(<<>>, _, Tree) -> Tree;    %% Ignore the empty key
                 (Key, Value, Tree) ->
+                io:format(user, "insert_store_nodes() ~p~n",[Key]),
                     Id = <<Prefix/binary, Key/binary>>,
                     aeu_mtrees:insert(Id, Value, Tree)
              end,
@@ -171,6 +175,7 @@ enter_store(Contract, CtTree) ->
 enter_store_nodes(Prefix, Writes, CtTree) ->
     Insert = fun(<<>>, _, Tree) -> Tree; %% Ignore the empty key
                 (Key, Value, Tree) ->
+                    io:format(user, "enter_store_nodes() ~p~n",[Key]),
                      Id = <<Prefix/binary, Key/binary>>,
                      aeu_mtrees:enter(Id, Value, Tree)
              end,

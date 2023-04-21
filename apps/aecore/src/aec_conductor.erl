@@ -210,6 +210,7 @@ consensus_request(Request) ->
     %% The conductor ensures that the given "consensus" was fully started
     try
         M = get_active_consensus_module(),
+        lager:debug("consensus_module = ~p\n", [M]),
         M:client_request(Request)
     catch
         Error:Reason:Stack ->
@@ -258,16 +259,17 @@ init(Options) ->
     State2 = set_option(autostart, Options, State1),
     State3 = set_option(strictly_follow_top, Options, State2),
     {ok, State4} = set_beneficiary(State3),
-    State5 = init_miner_instances(State4),
-    State6 = set_stratum_mode(State5), %% May overwrite beneficiary.
+    State5 = set_sync_mode(State4),
+    State6 = init_miner_instances(State5),
+    State7 = set_stratum_mode(State6), %% May overwrite beneficiary.
 
     aec_metrics:try_update([ae,epoch,aecore,chain,height],
                            aec_blocks:height(aec_chain:top_block())),
-    epoch_mining:info("Miner process initilized ~p", [State6]),
+    epoch_mining:info("Miner process initilized ~p", [State7]),
     aec_events:subscribe(candidate_block),
     %% NOTE: The init continues at handle_info(init_continue, State).
     self() ! init_continue,
-    {ok, State6}.
+    {ok, State7}.
 
 init_chain_state() ->
     case aec_chain:genesis_hash() of
@@ -500,6 +502,12 @@ get_option(Opt, Options) ->
     case proplists:lookup(Opt, Options) of
         none -> application:get_env(aecore, Opt);
         {_, Val} -> {ok, Val}
+    end.
+
+set_sync_mode(#state{} = State) ->
+    case aeu_env:find_config([<<"sync">>, <<"mode">>], [user_config, schema_default]) of
+        {ok, <<"beam">>} -> State#state{sync_mode = beam};
+        {ok, <<"sequential">>} -> State#state{sync_mode = sequential}
     end.
 
 set_beneficiary(#state{mining_state = MiningState} = State) ->
@@ -818,6 +826,7 @@ preempt_on_new_top(#state{ top_block_hash = OldHash,
     KeyHash = aec_blocks:prev_key_hash(NewBlock),
     %% A new micro block from the same generation should
     %% not cause a pre-emption or full re-generation of key-block.
+    lager:info("BlockType = ~p", [BlockType]),
     case BlockType of
         micro when OldKeyHash =:= KeyHash ->
             {micro_changed, State1};
@@ -833,7 +842,7 @@ preempt_on_new_top(#state{ top_block_hash = OldHash,
                                    key_block_candidates = undefined },
 
             [ aec_keys:promote_candidate(aec_blocks:miner(NewBlock)) || KeyOrNewForkMicro == key ],
-
+            lager:info("BlockType changed = ~p", [State5]),
             {changed, KeyOrNewForkMicro, NewBlock, create_key_block_candidate(State5)}
     end.
 
@@ -926,7 +935,9 @@ handle_wait_for_keys_reply(timeout, State) ->
 
 %%%===================================================================
 %%% Worker: Start mining
-
+start_mining_(#state{sync_mode = beam} = State) ->
+    %% Mining not possible in beam syncing mode
+    State;
 start_mining_(#state{keys_ready = false} = State) ->
     %% We need to get the keys first
     wait_for_keys(State);
@@ -1190,7 +1201,6 @@ handle_signed_block(Block, State) ->
 ok({ok, Value}) ->
     Value.
 
-
 handle_add_block(Block, #state{consensus = #consensus{consensus_module = ActiveConsensus}} = State, Origin) ->
     Header = aec_blocks:to_header(Block),
     case aec_headers:consensus_module(Header) of
@@ -1227,13 +1237,14 @@ handle_add_block(Block, Hash, Prev, #state{top_block_hash = TopBlockHash} = Stat
     %% Block validation is performed in the caller's context for
     %% external (gossip/sync) blocks and we trust the ones we
     %% produce ourselves.
+    BlockSyncMode = aec_blocks:extra(Block, sync, sequential),
     case aec_chain_state:insert_block_conductor(Block, Origin) of
         {ok, TopChanged, PrevKeyHeader, Events}  ->
-            handle_successfully_added_block(Block, Hash, TopChanged, PrevKeyHeader, Events, State, Origin);
+            handle_successfully_added_block(Block, Hash, TopChanged, PrevKeyHeader, Events, State, Origin, BlockSyncMode);
         {pof, TopChanged, PrevKeyHeader, _PoF, Events} ->
             %% TODO: should we really publish tx_events in this case?
             lager:info("PoF found in ~p", [Hash]),
-            handle_successfully_added_block(Block, Hash, TopChanged, PrevKeyHeader, Events, State, Origin);
+            handle_successfully_added_block(Block, Hash, TopChanged, PrevKeyHeader, Events, State, Origin, BlockSyncMode);
         {error, already_in_db} ->
             epoch_mining:debug("Block (~p) already in chain when top is (~p) [conductor]",
                                [Hash, TopBlockHash]),
@@ -1249,12 +1260,18 @@ handle_add_block(Block, Hash, Prev, #state{top_block_hash = TopBlockHash} = Stat
             {{error, Reason}, State}
     end.
 
-handle_successfully_added_block(Block, Hash, false, _, Events, State, Origin) ->
+handle_successfully_added_block(Block, _Hash, _NewTop, _PrevKeyHeader, _Events, State, _Origin, beam) ->
+    lager:info("Added block beam mode topheight = ~p Block Height = ~p", [State#state.top_height, aec_blocks:height(Block)]),
+    State1 = maybe_consensus_change(State, Block),
+    {ok, State1};
+handle_successfully_added_block(Block, Hash, false, _, Events, State, Origin, sequential) ->
+    lager:info("Added block sequential mode topheight = ~p Block Height = ~p", [State#state.top_height, aec_blocks:height(Block)]),
     maybe_publish_tx_events(Events, Hash, Origin),
     maybe_publish_block(Origin, Block),
     State1 = maybe_consensus_change(State, Block),
     {ok, State1};
-handle_successfully_added_block(Block, Hash, true, PrevKeyHeader, Events, State, Origin) ->
+handle_successfully_added_block(Block, Hash, true, PrevKeyHeader, Events, State, Origin, sequential) ->
+    lager:info("Added block sequential mode 2 topheight = ~p Block Height = ~p", [State#state.top_height, aec_blocks:height(Block)]),
     maybe_publish_tx_events(Events, Hash, Origin),
     maybe_publish_block(Origin, Block),
     State1 = maybe_consensus_change(State, Block),

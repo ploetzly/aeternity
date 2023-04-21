@@ -144,6 +144,8 @@ tag(key_block)            -> ?MSG_KEY_BLOCK;
 tag(micro_block)          -> ?MSG_MICRO_BLOCK;
 tag(get_generation)       -> ?MSG_GET_GENERATION;
 tag(generation)           -> ?MSG_GENERATION;
+tag(get_poi)              -> ?MSG_GET_POI;
+tag(poi)                  -> ?MSG_POI;
 tag(txs)                  -> ?MSG_TXS;
 tag(block_txs)            -> ?MSG_BLOCK_TXS;
 tag(response)             -> ?MSG_P2P_RESPONSE;
@@ -166,6 +168,8 @@ rev_tag(?MSG_KEY_BLOCK)            -> key_block;
 rev_tag(?MSG_MICRO_BLOCK)          -> micro_block;
 rev_tag(?MSG_GET_GENERATION)       -> get_generation;
 rev_tag(?MSG_GENERATION)           -> generation;
+rev_tag(?MSG_GET_POI)              -> get_poi;
+rev_tag(?MSG_POI)                  -> poi;
 rev_tag(?MSG_TXS)                  -> txs;
 rev_tag(?MSG_BLOCK_TXS)            -> block_txs;
 rev_tag(?MSG_P2P_RESPONSE)         -> response;
@@ -188,6 +192,8 @@ latest_vsn(key_block)            -> ?KEY_BLOCK_VSN;
 latest_vsn(micro_block)          -> ?MICRO_BLOCK_VSN;
 latest_vsn(get_generation)       -> ?GET_GENERATION_VSN;
 latest_vsn(generation)           -> ?GENERATION_VSN;
+latest_vsn(get_poi)              -> ?GET_POI_VSN;
+latest_vsn(poi)                  -> ?POI_VSN;
 latest_vsn(txs)                  -> ?TXS_VSN;
 latest_vsn(block_txs)            -> ?BLOCK_TXS_VSN;
 latest_vsn(response)             -> ?RESPONSE_VSN;
@@ -375,6 +381,10 @@ serialization_template(get_generation, ?GET_GENERATION_VSN) ->
     [{hash, binary}, {forward, bool}];
 serialization_template(generation, ?GENERATION_VSN) ->
     [{key_block, binary}, {micro_blocks, [binary]}, {forward, bool}];
+serialization_template(get_poi, ?GET_POI_VSN) ->
+    [{hash, binary}];
+serialization_template(poi, ?POI_VSN) ->
+    [{poi, binary}];
 serialization_template(txs, ?TXS_VSN) ->
     [{txs, [binary]}];
 serialization_template(txps_init, ?TX_POOL_SYNC_INIT_VSN) ->

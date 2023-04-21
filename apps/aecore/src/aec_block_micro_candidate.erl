@@ -59,7 +59,7 @@ create_with_state(Block, KeyBlock, Txs, Trees) ->
                       aetx_env:env()) ->
         {ok, list(aetx_sign:signed_tx()), aec_trees:trees(), aetx_env:events()}.
 apply_block_txs(Txs, Trees, Env) ->
-    {ok, Txs1, _InvalidTxs, Trees1, Events} = int_apply_block_txs(Txs, Trees, Env, false),
+    {ok, Txs1, _InvalidTxs, Trees1, Events, Witness} = int_apply_block_txs(Txs, Trees, Env, false),
     {ok, Txs1, Trees1, Events}.
 
 
@@ -195,15 +195,15 @@ get_pof(KeyBlock, PrevBlockHash, PrevBlock) ->
 
 %% Non-strict
 int_apply_block_txs(Txs, Trees, Env, false) ->
-    {ok, _Txs1, _InvalidTxs, _Trees1, _Events} =
+    {ok, _Txs1, _InvalidTxs, _Trees1, _Events, _Witness} =
         aec_trees:apply_txs_on_state_trees(Txs, Trees, Env);
 %% strict
 int_apply_block_txs(Txs, Trees, Env, true) ->
     BlockGasLimit = aec_governance:block_gas_limit(),
     Opts = [strict, tx_events, {gas_limit, BlockGasLimit}],
     case aec_trees:apply_txs_on_state_trees(Txs, Trees, Env, Opts) of
-        {ok, Txs1, [], Trees1, Events} ->
-            {ok, Txs1, Trees1, Events};
+        {ok, Txs1, [], Trees1, Events, Witness} ->
+            {ok, Txs1, Trees1, Events, Witness};
         Err = {error, _} ->
             Err
     end.
@@ -238,16 +238,17 @@ add_txs_to_trees(MaxGas, Trees, [Tx | Txs], Acc, Env) ->
     case TxGasLimit =< MaxGas of
         true ->
             case aec_trees:apply_txs_on_state_trees([Tx], Trees, Env) of
-                {ok, [], _, _, _} ->
+                {ok, [], _, _, _, _} ->
                     add_txs_to_trees(MaxGas, Trees, Txs, Acc, Env);
-                {ok, [Tx], _, Trees1, Events} ->
+                {ok, [Tx], _, Trees1, Events, Witness} ->
                     Env1 = aetx_env:set_events(Env, Events),
+                    Env2 = aetx_env:set_witness(Env1, Witness),
                     TxGas =
                         case Protocol =< ?IRIS_PROTOCOL_VSN of
                             true  -> TxGasLimit;
                             false -> aetx:used_gas(aetx_sign:tx(Tx), Height, Protocol, Trees1)
                         end,
-                    add_txs_to_trees(MaxGas - TxGas, Trees1, Txs, [Tx | Acc], Env1)
+                    add_txs_to_trees(MaxGas - TxGas, Trees1, Txs, [Tx | Acc], Env2)
             end;
         false ->
             {lists:reverse(Acc), Trees, Env}

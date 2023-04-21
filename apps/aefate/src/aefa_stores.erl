@@ -75,9 +75,9 @@
 -define(ASSERT(Check, Err), ok).
 -endif.
 
--ifdef(DEBUG).
+-ifdef(TEST).
 -define(DEBUG_STORE(S), debug_stores(S)).
--define(DEBUG_PRINT(Fmt, Args), io:format(Fmt, Args)).
+-define(DEBUG_PRINT(Fmt, Args), io:format(user, Fmt, Args)).
 -else.
 -define(DEBUG_STORE(S), ok).
 -define(DEBUG_PRINT(Fmt, Args), ok).
@@ -300,7 +300,13 @@ finalize(API, GasLeft, #store{cache = Cache} = _S) ->
     ?DEBUG_STORE(_S),
     try maps:fold(fun finalize_entry/3, {[], GasLeft}, Cache) of
         {Stores, GasLeft1} ->
+            lists:foreach(fun({_PubKey, S}) ->
+                io:format(user, "FATE Stores: ~p~n", [aect_contracts_store:contents(S)])
+            end, Stores),
+            
             API1 = finalize_stores(Stores, API),
+            Witness = witness(Cache, API1),
+            io:format(user, "FATE Witness: ~p~n", [Witness]),
             {ok, API1, GasLeft1}
     catch
         throw:out_of_gas ->
@@ -336,6 +342,10 @@ terms_to_finalize(#store{cache = Cache}) ->
   [ Term || #cache_entry{dirty = true, terms = Terms} <- maps:values(Cache),
             {Term, true} <- maps:values(Terms) ].
 
+%% All the terms we ever read or wrote during this evaluation
+witness(Cache, API) ->
+    [ {Term, Dirty, D} || #cache_entry{dirty = Dirty, terms = Terms} <- maps:values(Cache),
+            {Term, D} <- maps:values(Terms) ].
 %%%===================================================================
 %%% Store updates
 
@@ -452,6 +462,7 @@ perform_store_update(_OldMeta, {gc_map, MapId}, S) ->
 push_term(Pos, FateVal, Store) ->
     Val = aeb_fate_encoding:serialize(FateVal),
     Key = store_key(Pos),
+    io:format(user, "push_term Key = ~p~n", [Key]),
     Bytes = byte_size(Key) + byte_size(Val),
     {aect_contracts_store:put(Key, Val, Store), Bytes}.
 
@@ -698,10 +709,10 @@ gc_refcounts(Ids, Metadata, Store) ->
 
 %% -- Debug ------------------------------------------------------------------
 
--ifdef(DEBUG).
+-ifdef(TEST).
 debug_stores(#store{cache = Cache}) ->
     [ begin
-          io:format("Contract: ~p\n- Store\n~s", [Pubkey, debug_store(Store)])
+          io:format(user, "Contract: ~p\n- Store\n~s", [Pubkey, debug_store(Store)])
       end || {Pubkey, #cache_entry{ store = Store }} <- maps:to_list(Cache) ],
     ok.
 

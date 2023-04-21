@@ -1022,6 +1022,17 @@
                     "type" : "integer",
                     "default" : 3015
                 },
+                "mode" : {
+                    "description" : "Sync mode. Either beam or sequential",
+                    "type": "string",
+                    "enum" : ["beam", "sequential"],
+                    "default" : "sequential"
+                },
+                "beam_full_sync_height_from_top" : {
+                    "description": "When using beam sync switch to full sync at this distance below the current top",
+                    "type" : "integer",
+                    "default" : 100
+                },
                 "ping_interval" : {
                     "description" : "Interval between pings (in ms)",
                     "type" : "integer",

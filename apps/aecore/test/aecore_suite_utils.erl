@@ -1115,7 +1115,7 @@ default_config(N, Config) ->
           #{<<"hwm">> => 5000},
       <<"mining">> =>
           #{<<"autostart">> => false,
-            <<"beneficiary">> => aeser_api_encoder:encode(account_pubkey, PubKey),
+            
             <<"beneficiary_reward_delay">> => 2},
       <<"chain">> =>
           #{<<"persist">> => true},

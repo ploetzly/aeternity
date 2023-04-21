@@ -41,6 +41,9 @@
 -export([ get_all_accounts_balances/1
         , lock_coins/2]).
 
+-export([ to_list/1
+        ]).
+
 -export_type([tree/0]).
 
 -type key() :: aec_keys:pubkey().
@@ -158,6 +161,10 @@ lookup_poi(AccountKey, Poi) ->
         {ok, SerializedAccount} -> {ok, aec_accounts:deserialize(AccountKey, SerializedAccount)};
         Err -> Err
     end.
+
+-spec to_list(tree()) -> [{term(), term()}].
+to_list(AccountsTree) ->
+    aeu_mtrees:to_list(AccountsTree).
 
 -spec commit_to_db(tree()) -> tree().
 commit_to_db(Tree) ->

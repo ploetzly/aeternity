@@ -42,6 +42,9 @@
          set_time_in_msecs/2,
          set_txs/2,
          set_txs_hash/2,
+         set_extra/3,
+         extra/1,
+         extra/3,
          signature/1,
          target/1,
          time_in_msecs/1,
@@ -339,6 +342,24 @@ set_txs_hash(Block, TxsRootHash) ->
 -spec txs_hash(micro_block()) -> binary().
 txs_hash(Block) ->
     aec_headers:txs_hash(to_micro_header(Block)).
+
+-spec set_extra(block(), atom(), atom()) -> block().
+set_extra(Block, Key, Value) ->
+    Header = to_header(Block),
+    Extra =  aec_headers:extra(Header),
+    Extra1 = maps:put(Key, Value, Extra),
+    set_header(Block, aec_headers:set_extra(Header, Extra1)).
+
+extra(Block) ->
+    aec_headers:extra(to_header(Block)).
+
+extra(Block, Key, Default) ->
+    case aec_headers:extra(to_header(Block)) of
+        #{} = Extra ->
+            maps:get(Key, Extra, Default);
+        _ ->
+            Default
+    end.
 
 -spec update_micro_candidate(micro_block(), txs_hash(), state_hash(),
                              [aetx_sign:signed_tx()]

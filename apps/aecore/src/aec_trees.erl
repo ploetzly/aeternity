@@ -644,14 +644,15 @@ apply_txs_on_state_trees(SignedTxs, Trees, Env, Opts) ->
                                aetx_env:env(),
                                list()) ->
     {ok, ValidTxs:: [aetx_sign:signed_tx()], InvalidTxs:: [{aetx_sign:signed_tx(), Error :: atom()}],
-     Trees1 :: aec_trees:trees(), aetx_env:events()}
+     Trees1 :: aec_trees:trees(), aetx_env:events(), aec_witness:witness()}
     | {error, atom()}.
 apply_txs_on_state_trees([], ValidTxs, InvalidTxs, Trees,Env,Opts) ->
     Events = case proplists:get_bool(tx_events, Opts) of
                  true -> aetx_env:events(Env);
                  false -> []
              end,
-    {ok, lists:reverse(ValidTxs), lists:reverse(InvalidTxs), Trees, Events};
+    Witness = aetx_env:witness(Env),
+    {ok, lists:reverse(ValidTxs), lists:reverse(InvalidTxs), Trees, Events, Witness};
 apply_txs_on_state_trees([SignedTx | Rest], ValidTxs, InvalidTxs, Trees, Env, Opts) ->
     Strict     = proplists:get_value(strict, Opts, false),
     DontVerify = proplists:get_value(dont_verify_signature, Opts, false),
@@ -700,6 +701,7 @@ tx_process(Tx, Trees, Env, Opts) ->
     GasLimit = proplists:get_value(gas_limit, Opts, undefined),
     case aetx:process(Tx, Trees, Env) of
         {ok, Trees1, Env1} ->
+            lager:debug("Tx is applied ~p", [Tx]),
             check_gas_limit(GasLimit, Tx, Trees1, Env1, Opts);
         Err = {error, _} ->
             Err

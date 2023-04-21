@@ -194,7 +194,11 @@ do_eval(Instructions, Trees, TxEnv) ->
     S = aeprimop_state:new(Trees, TxEnv),
     case int_eval(Instructions, S) of
         {ok, S1} ->
-            {ok, S1#state.trees, S1#state.tx_env};
+            %% Pull the witness up from the primop state to the tx_env
+            %% for return so we don't have to change all places that call this
+            Witness = aeprimop_state:witness(S1),
+            TxEnv1 = aetx_env:set_witness(TxEnv, Witness),
+            {ok, S1#state.trees, TxEnv1};
         {ok, _, _} ->
             error(illegal_return);
         {error, _} = Err ->
@@ -478,18 +482,24 @@ int_eval(Instructions, S, Opts) ->
     {ok, call(), state()} |
     no_return().
 eval_instructions([I|Left], S, Opts) ->
+    io:format(user, "Eval one ~p~n", [I]),
     case eval_one(I, S) of
         #state{} = S1 ->
+            io:format(user, "Eval one new State ~p~n", [S1#state.witness]),
             eval_instructions(Left, S1, Opts);
         {return, Return, #state{} = S1} when Left =:= [] ->
-            S2 = cache_write_through(S1, Opts),
-            {ok, Return, S2};
+            S2 = aeprimop_state:collect_block_witness(S1),
+            S3 = cache_write_through(S2, Opts),
+            io:format(user, "Eval one return ~p~n", [S3#state.witness]),
+            {ok, Return, S3};
         {return, _Return, #state{}} when Left =/= [] ->
             error(return_not_last)
     end;
 eval_instructions([], S, Opts) ->
-    S1 = cache_write_through(S, Opts),
-    {ok, S1}.
+    S1 = aeprimop_state:collect_block_witness(S),
+    S2 = cache_write_through(S1, Opts),
+    io:format(user, "Eval no more instructions ~p~n", [S2#state.witness]),
+    {ok, S2}.
 
 -spec cache_write_through(state(), options()) -> state().
 cache_write_through(S, Opts) ->
@@ -1690,6 +1700,7 @@ prepare_init_call(Code, Contract, S = #state{protocol = Protocol}) ->
     number(), fee(), state(), state()) -> state().
 contract_init_call_success(Type, InitCall, Contract, GasLimit, Fee, RollbackS, S) ->
     ReturnValue = aect_call:return_value(InitCall),
+    io:format(user, "contract_init_call_success = ~p~n", [ReturnValue]),
     %% The return value is cleared for successful init calls.
     InitCall1   = aect_call:set_return_value(<<>>, InitCall),
     case aect_contracts:ct_version(Contract) of

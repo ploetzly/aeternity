@@ -612,7 +612,20 @@ internal_insert_transaction(Node, Block, Origin, Ctx) ->
             ok
     end,
     ok = db_put_node(Block, node_hash(Node)),
-    {State3, Events} = update_state_tree(Node, State2, Ctx),
+    BlockSyncMode = aec_blocks:extra(Block, sync, sequential),
+    {State3, Events} =
+            case BlockSyncMode of
+                beam ->
+                    %% During beam sync first pass keyblocks shouldn't
+                    %% have multiple peers at the same height - should
+                    %% be a clean pass. Just set pof and pogf accordingly.
+                    S1 = update_found_pof(Node, [], State2, Ctx),
+                    S2 = update_found_pogf(Node, [], S1),
+                    S3 = set_top_block_node(Node, S2),
+                    {S3, no_events()};
+                sequential ->
+                    update_state_tree(Node, State2, Ctx)
+            end,
     TopChanged = persist_state(State1, State3),
     #node{header = PrevKeyHeader} = aec_block_insertion:ctx_prev_key(Ctx),
     case maps:get(found_pogf, State3) of
@@ -670,6 +683,7 @@ update_state_tree(Node, State, Ctx) ->
     {ForkInfo, MicSibHeaders, KeySibHeaders} = maybe_set_new_fork_id(Node, ForkInfoIn, State),
     State1 = update_found_pof(Node, MicSibHeaders, State, Ctx),
     State2 = update_found_pogf(Node, KeySibHeaders, State1),
+    lager:info("State Trees ~p", [Trees]),
     {State3, NewTopDifficulty, Events} = update_state_tree(Node, Trees, ForkInfo, State2),
     OldTopNode = get_top_block_node(State),
     handle_top_block_change(OldTopNode, NewTopDifficulty, Node, Events, State3).
@@ -953,7 +967,7 @@ apply_micro_block_transactions(Node, FeesIn, Trees) ->
     Env = aetx_env:tx_env_from_key_header(KeyHeader, node_prev_key_hash(Node),
                                           node_time(Node), node_prev_hash(Node)),
     case timer:tc(aec_block_micro_candidate, apply_block_txs_strict, [Txs, Trees, Env]) of
-        {Time, {ok, _, NewTrees, Events}} ->
+        {Time, {ok, _, NewTrees, Events, Witness}} ->
             aec_metrics:try_update([ae, epoch, aecore, blocks, micro, txs_execution_time, success], Time),
             if map_size(Events) > 0 -> lager:debug("tx_events = ~p", [Events]);
                true -> ok
@@ -963,7 +977,7 @@ apply_micro_block_transactions(Node, FeesIn, Trees) ->
                                   Fee = aetx:deep_fee(aetx_sign:tx(SignedTx), NewTrees),
                                   AccFee + Fee
                           end, FeesIn, Txs),
-            {NewTrees, TotalFees, Events};
+            {NewTrees, TotalFees, Events, Witness};
         {Time, {error,_What}} ->
             aec_metrics:try_update([ae, epoch, aecore, blocks, micro, txs_execution_time, error], Time),
             aec_block_insertion:abort_state_transition(invalid_transactions_in_block)
@@ -1094,7 +1108,16 @@ db_find_state(Hash, DirtyBackend) ->
                        , fraud = Fraud
                        }
             };
-        none -> error
+        none -> 
+            lager:info("db_find_state FAILLLLLL hash = ~p", [Hash]),
+            lager:info("db_find_state FAILLLLLL BT = ~p", [erlang:process_info(self(), current_stacktrace)]),
+            Keys = mnesia:dirty_all_keys(aec_block_state),
+            lager:info("db_find_state aec_block_state KEYEYEYEYYS = ~p", [Keys]),
+            lager:info("db_find_state aec_block_state KEYEYEYEYYS = ~p", [mnesia:dirty_read(aec_block_state, lists:last(Keys))]),
+            lager:info("db_find_state aec_blocks KEYEYEYEYYS = ~p", [mnesia:dirty_all_keys(aec_blocks)]),
+            lager:info("db_find_state aec_headers KEYEYEYEYYS = ~p", [mnesia:dirty_all_keys(aec_headers)]),
+            lager:info("db_find_state aec_headers KEYEYEYEYYSXXXXX = ~p", [mnesia:dirty_read(aec_headers, hd(Keys))]),
+        error
     end.
 
 db_find_difficulty(Hash) when is_binary(Hash) ->

@@ -125,6 +125,7 @@ recent_cache_trim_node(ActiveConsensus, RecentNode) ->
 build_insertion_ctx(Node, Block) ->
     Consensus = node_consensus(Node),
     IsMicroblock = node_is_micro_block(Node),
+    BlockSyncMode = aec_blocks:extra(Block, sync, sequential),
     Cache = case ets:lookup(?RECENT_CACHE, node_prev_key_hash(Node)) of
                 [] -> undefined;
                 [#recent_blocks{recents = [N|_]}=C] ->
@@ -141,7 +142,7 @@ build_insertion_ctx(Node, Block) ->
                             undefined
                     end
             end,
-    case build_insertion_ctx(Consensus, Node, node_type(Node), Cache) of
+    case build_insertion_ctx(Consensus, Node, node_type(Node), Cache, BlockSyncMode) of
         {error, _} = Err -> Err;
         Ctx ->
             R = if IsMicroblock -> Consensus:dirty_validate_micro_node_with_ctx(Node, Block, Ctx);
@@ -157,28 +158,28 @@ build_insertion_ctx(Node, Block) ->
 %% Please note that this is called in dirty context without a try
 %% clause - don't hard crash here.
 %% Performs basic checks to ensure the chain consistency
-build_insertion_ctx(_Consensus, Node, micro, undefined) ->
+build_insertion_ctx(_Consensus, Node, micro, undefined, SyncMode) ->
     % Microblocks only require the prev node and prev_key_node for validation
-    case build_insertion_ctx_prev(Node, undefined) of
+    case build_insertion_ctx_prev(Node, undefined, SyncMode) of
         {ok, PrevNode, PrevKeyNode} ->
             #insertion_ctx{ prev_key_node = PrevKeyNode
                           , prev_node = PrevNode };
         {error, _} = Err ->
             Err
     end;
-build_insertion_ctx(_Consensus, Node, micro, #recent_blocks{recents = [H|_]}) ->
-    case build_insertion_ctx_prev(Node, H) of
+build_insertion_ctx(_Consensus, Node, micro, #recent_blocks{recents = [H|_]}, SyncMode) ->
+    case build_insertion_ctx_prev(Node, H, SyncMode) of
         {ok, PrevNode, PrevKeyNode} ->
             #insertion_ctx{ prev_key_node = PrevKeyNode
                           , prev_node = PrevNode };
         {error, _} = Err ->
             Err
     end;
-build_insertion_ctx(Consensus, Node, key, undefined) ->
+build_insertion_ctx(Consensus, Node, key, undefined, SyncMode) ->
     Height        = node_height(Node),
     GenesisHeight = aec_block_genesis:height(),
     N = min(Height-GenesisHeight, Consensus:recent_cache_n()),
-    case build_insertion_ctx_prev(Node, undefined) of
+    case build_insertion_ctx_prev(Node, undefined, SyncMode) of
         {ok, PrevNode, PrevKeyNode} ->
             case get_n_key_nodes_from(PrevKeyNode, N) of
                 {ok, Nodes} ->
@@ -195,8 +196,8 @@ build_insertion_ctx(Consensus, Node, key, undefined) ->
         {error, _} = Err ->
             Err
     end;
-build_insertion_ctx(Consensus, Node, key, #recent_blocks{recents = [H|T], len = N}) ->
-    case build_insertion_ctx_prev(Node, H) of
+build_insertion_ctx(Consensus, Node, key, #recent_blocks{recents = [H|T], len = N}, SyncMode) ->
+    case build_insertion_ctx_prev(Node, H, SyncMode) of
         {ok, PrevNode, PrevKeyNode} ->
             #insertion_ctx{ prev_key_node = PrevKeyNode
                           , prev_node = PrevNode
@@ -207,23 +208,34 @@ build_insertion_ctx(Consensus, Node, key, #recent_blocks{recents = [H|T], len = 
     end.
 
 %% Retrieves the prev and prev_key node - performs basic consistency checks
-build_insertion_ctx_prev(Node, undefined) ->
+build_insertion_ctx_prev(Node, undefined, SyncMode) ->
     case dirty_db_find_node(node_prev_key_hash(Node)) of
         error ->
             {error, {illegal_orphan, node_hash(Node)}};
         {ok, N} ->
-            build_insertion_ctx_prev(Node, N)
+            build_insertion_ctx_prev(Node, N, SyncMode)
     end;
-build_insertion_ctx_prev(Node, PrevKeyNode) ->
+build_insertion_ctx_prev(Node, PrevKeyNode, SyncMode) ->
     PrevKeyHash = node_prev_key_hash(Node),
     case node_prev_hash(Node) of
         PrevKeyHash ->
             build_insertion_ctx_check_prev_height(Node, PrevKeyNode, PrevKeyNode);
+        _H when SyncMode == beam ->
+            %% When syncing the spine (keyblocks only) we don't expect to
+            %% find a previous microblock. Just ensure Keyblock hashes link
+            case node_hash(PrevKeyNode) =:= PrevKeyHash of
+                true ->
+                    %% Now assert heights
+                    build_insertion_ctx_check_prev_height(Node, PrevKeyNode, PrevKeyNode);
+                false ->
+                    {error, prev_key_hash_inconsistency}
+            end;
         H ->
             case dirty_db_find_node(H) of
                 error ->
                     %% Ok so the prev keyblock is present but not the prev block?
                     %% this shouldn't be the case even for the genesis block
+                    lager:info("Illegal orphan prev keyblock present but not prev block~p", [node_hash(Node)]),
                     {error, {illegal_orphan, node_hash(Node)}};
                 {ok, #node{type = key}} ->
                     {error, prev_key_hash_inconsistency};

@@ -11,4 +11,5 @@
                , env        :: dict:dict()
                , tx_env     :: aetx_env:env()
                , protocol   :: aec_hard_forks:protocol_vsn()
+               , witness    :: aec_witness:witness()
                }).

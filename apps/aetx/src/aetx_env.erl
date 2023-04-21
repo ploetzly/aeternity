@@ -38,6 +38,7 @@
         , key_hash/1
         , payer/1
         , signed_tx/1
+        , witness/1
         , time_in_msecs/1
         , events/1
         ]).
@@ -56,6 +57,7 @@
         , set_height/2
         , set_payer/2
         , set_signed_tx/2
+        , set_witness/2
         , tx_event/3
         , tx_event/4
         , set_events/2
@@ -92,6 +94,7 @@
              , signed_tx             :: wrapped_tx()
              , time                  :: non_neg_integer()
              , events = no_events()  :: events()
+             , witness = aec_witness:new() :: aec_witness:witneses()
              }).
 
 -opaque env() :: #env{}.
@@ -335,8 +338,8 @@ set_events(Env, Events) ->
 %%------
 
 -spec update_env(env(), env()) -> env().
-update_env(#env{events = Events}, ToEnv) ->
-    ToEnv#env{events = Events}.
+update_env(#env{events = Events, witness = Witness}, ToEnv) ->
+    ToEnv#env{events = Events, witness = Witness}.
 
 %%------
 
@@ -351,6 +354,14 @@ signed_tx(#env{signed_tx = X}) -> X.
 -spec set_signed_tx(env(), wrapped_tx()) -> env().
 set_signed_tx(Env, {value, _} = X) -> Env#env{signed_tx = X};
 set_signed_tx(Env, none) ->  Env#env{signed_tx = none}.
+
+%%------
+
+-spec witness(env()) -> aec_witness:witness().
+witness(#env{witness = X}) -> X.
+
+-spec set_witness(env(),aec_witness:witness()) -> env().
+set_witness(Env, X) -> Env#env{witness = X}.
 
 %%------
 

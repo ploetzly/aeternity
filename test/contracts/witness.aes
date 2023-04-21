@@ -1,0 +1,17 @@
+contract Witness =
+
+  record state = {foo : int,
+                  bar : int,
+                  baz : map(int, string) }
+
+  entrypoint init() : state =
+    { foo = 135,
+      bar = 136,
+      baz = {[0] = "val"} }
+
+  payable stateful entrypoint update() =
+    let keys = [1..102]
+    let entries = [(k, "val") | k <- keys]
+    let big_map = Map.from_list(entries)
+    put(state{bar = state.foo})
+    put(state{baz = big_map})

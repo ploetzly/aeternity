@@ -25,6 +25,7 @@
         , get_header_by_hash/2
         , get_header_by_height/3
         , get_n_successors/4
+        , get_poi/2
         , ping/1
         , send_block/2
         , send_tx/2
@@ -108,6 +109,9 @@ get_generation(PeerId, Hash) ->
 
 get_generation(PeerId, Hash, Dir) ->
     call(PeerId, {get_generation, [Hash, Dir]}).
+
+get_poi(PeerId, Hash) ->
+    call(PeerId, {get_poi, [Hash]}).
 
 tx_pool_sync_init(PeerId) ->
     call(PeerId, {tx_pool, [sync_init]}).
@@ -586,6 +590,7 @@ handle_msg(S, MsgType, false, Request, {ok, Vsn, Msg}) ->
         get_header_by_height -> handle_get_header_by_height(S, Vsn, Msg);
         get_n_successors     -> handle_get_n_successors(S, Vsn, Msg);
         get_generation       -> handle_get_generation(S, Msg);
+        get_poi              -> handle_get_poi(S, Msg);
         get_block_txs        -> handle_get_block_txs(S, Msg);
         key_block            -> handle_new_key_block(S, Msg);
         micro_block          -> handle_new_micro_block(S, Msg);
@@ -602,6 +607,7 @@ handle_msg(S, MsgType, true, Request, {ok, _Vsn, Msg}) ->
         header        -> handle_header_rsp(S, Request, Msg);
         header_hashes -> handle_header_hashes_rsp(S, Request, Msg);
         generation    -> handle_get_generation_rsp(S, Request, Msg);
+        poi           -> handle_get_poi_rsp(S, Request, Msg);
         txps_init     -> handle_tx_pool_sync_rsp(S, init, Request, Msg);
         txps_unfold   -> handle_tx_pool_sync_rsp(S, unfold, Request, Msg);
         txs           -> handle_tx_pool_sync_rsp(S, get, Request, Msg);
@@ -638,6 +644,8 @@ prepare_request_data(_S, get_n_successors, [FromHash, TargetHash, N]) ->
     #{ from_hash => FromHash, target_hash => TargetHash, n => N };
 prepare_request_data(_S, get_generation, [Hash, Dir]) ->
     #{ hash => Hash, forward => (Dir == forward) };
+prepare_request_data(_S, get_poi, [Hash]) ->
+    #{ hash => Hash };
 prepare_request_data(_S, get_node_info, _) ->
     #{}.
 
@@ -750,7 +758,10 @@ handle_ping_msg(S, RemotePingObj) ->
                     aec_sync:start_sync(PeerId, RTHash, DR)
             end,
             ok = aec_peers:add_peers(SourceAddr, RPeers),
-            aec_tx_pool_sync:connect(PeerId, self()),
+            case aeu_env:find_config([<<"sync">>, <<"mode">>], [user_config, schema_default]) of
+                {ok, <<"beam">>} -> ok;
+                {ok, <<"sequential">>} -> aec_tx_pool_sync:connect(PeerId, self())
+            end,
             ok;
         {ok, _SyncAllowed, RGHash, _RTHash, _RDiff, RPeers}
           when RGHash == LGHash ->
@@ -803,7 +814,10 @@ ping_obj_rsp(S, RemotePingObj) ->
 local_ping_obj(#{ kind := ConnKind, ext_sync_port := Port }) ->
     GHash = aec_chain:genesis_hash(),
     TopHash = aec_chain:top_key_block_hash(),
-    {ok, Difficulty} = aec_chain:difficulty_at_top_block(),
+    Difficulty = case aec_chain:difficulty_at_top_block() of
+        {ok, D} -> D;
+        {error, not_rooted} -> 0
+    end,
     #{ genesis_hash => GHash,
        best_hash    => TopHash,
        difficulty   => Difficulty,
@@ -956,6 +970,44 @@ handle_get_generation_rsp(S, {get_generation, From, _TRef}, Msg) ->
         end,
     gen_server:reply(From, Res),
     remove_request_fld(S, get_generation).
+
+%% -- Get Generation ----------------------------------------------------------
+
+handle_get_poi(S, Msg) ->
+    Response =
+        case do_get_poi(maps:get(hash, Msg)) of
+            {ok, POI} ->
+                SerPOI = aec_trees:serialize_poi(POI),
+                {ok, #{poi => SerPOI }};
+            error ->
+                {error, block_not_found}
+        end,
+    send_response(S, poi, Response),
+    S.
+
+do_get_poi(Hash) ->
+    aec_db:ensure_activity(async_dirty, fun() ->
+        do_get_poi_(Hash) end).
+
+do_get_poi_(Hash) ->
+    case aec_chain:get_block_state(Hash) of
+        {ok, Trees} ->
+            {ok, aec_trees:new_poi(Trees)};
+        _Err = {error, _} ->
+            error
+    end.
+
+handle_get_poi_rsp(S, {get_poi, From, _TRef}, Msg) ->
+    SerPOI = maps:get(poi, Msg),
+    Res =
+        case aec_trees:deserialize_poi(SerPOI) of
+            {ok, POI} ->
+                {ok, POI};
+            Err = {error, _} ->
+                Err
+        end,
+    gen_server:reply(From, Res),
+    remove_request_fld(S, get_poi).
 
 %% -- TX Pool ----------------------------------------------------------------
 

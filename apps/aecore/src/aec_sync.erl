@@ -149,10 +149,12 @@ else(Else) ->
 %% to pick a random hash from the hashes in the pool.
 
 -type chain_id() :: reference().
+-type sync_mode() :: sequential | beam.
 -record(chain_block, { hash :: aec_blocks:block_header_hash()
                      , height :: aec_blocks:height()
                      }).
 -record(chain, { id :: chain_id()
+               , max_height :: aec_blocks:height()
                , peers :: [aec_peer:id()]
                , blocks :: [#chain_block{}, ...]
                }).
@@ -171,6 +173,7 @@ else(Else) ->
                 }).
 -record(sync_task, {id :: chain_id(),
                     suspect = false :: boolean(),
+                    sync_mode = sequential :: sync_mode(),
                     chain :: #chain{},
                     pool = [] :: [#pool_item{}],
                     agreed :: undefined | #chain_block{},
@@ -180,17 +183,25 @@ else(Else) ->
 -record(state, { sync_tasks = []                 :: [#sync_task{}]
                , last_generation_in_sync = false :: boolean()
                , top_target = 0                  :: aec_blocks:height()
+               , max_height                      :: aec_blocks:height()
                , gossip_txs = true               :: boolean()
                , is_syncing = false              :: boolean()
+               , sync_mode = sequential :: sync_mode()
                }).
 
 start_link() ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [], [{debug, [trace]}]).
 
 init([]) ->
     aec_events:subscribe(block_to_publish),
     aec_events:subscribe(tx_created),
     aec_events:subscribe(tx_received),
+
+    SyncMode =
+        case aeu_env:find_config([<<"sync">>, <<"mode">>], [user_config, schema_default]) of
+            {ok, <<"beam">>} -> beam;
+            {ok, <<"sequential">>} -> sequential
+        end,
 
     DefaultPeers =
         case aeu_env:find_config([<<"include_default_peers">>], [user_config, schema_default, {value, true}]) of
@@ -226,7 +237,7 @@ init([]) ->
     erlang:send_after(rand:uniform(1000), self(), update_sync_progress_metric),
 
     erlang:process_flag(trap_exit, true),
-    {ok, #state{}}.
+    {ok, #state{sync_mode = SyncMode}}.
 
 handle_call({worker_for_peer, PeerId}, _, State) ->
     {reply, get_worker_for_peer(State, PeerId), State};
@@ -245,12 +256,12 @@ handle_call({known_chain, Chain0 = #chain{ id = CId0 }, NewChainInfo}, _From, St
     {Res, State1} = sync_task_for_chain(Chain, State),
     State2 =
         case Res of
-            {NewOrEx, SyncChain, _} when NewOrEx == new; NewOrEx == existing ->
+            {NewOrEx, SyncChain, _, _} when NewOrEx == new; NewOrEx == existing ->
                 maybe_new_top_target(SyncChain, State1);
             {inconclusive, _, _} ->
                 State1
         end,
-    {reply, Res, State2};
+    {reply, Res, State2#state{max_height = Chain#chain.max_height}};
 handle_call({update_sync_task, Update, STId}, _From, State) ->
     State1 = do_update_sync_task(State, STId, Update),
     {reply, ok, State1};
@@ -285,10 +296,10 @@ handle_cast({start_sync, PeerId, RemoteHash, _RemoteDifficulty}, State) ->
     {noreply, State};
 handle_cast({get_generation, PeerId, Hash},
             %% Usually initial sync. Trust gossip afterwards.
-            State = #state{ last_generation_in_sync = false }) ->
+            State = #state{ last_generation_in_sync = false, sync_mode = SyncMode, max_height = MaxHeight}) ->
     run_job(sync_tasks,
             fun() ->
-                case do_get_generation(PeerId, Hash) of
+                case do_get_generation(PeerId, Hash, SyncMode, MaxHeight) of
                     {ok, _}    -> set_last_generation_in_sync();
                     {error, _} -> ok
                 end
@@ -368,15 +379,15 @@ terminate(_, _) ->
 code_change(_FromVsn, State, _Extra) ->
     {ok, State}.
 
-sync_task_for_chain(Chain, S = #state{ sync_tasks = STs }) ->
+sync_task_for_chain(Chain, S = #state{ sync_tasks = STs, sync_mode = SyncMode }) ->
     case match_tasks(Chain, STs, []) of
         no_match ->
-            ST = init_sync_task(Chain),
-            {{new, Chain, ST#sync_task.id}, set_sync_task(ST, S)};
+            ST = init_sync_task(Chain, SyncMode),
+            {{new, Chain, ST#sync_task.id, SyncMode}, set_sync_task(ST, S)};
         {match, ST = #sync_task{ id = STId, chain = C2 }} ->
             NewChain = merge_chains(Chain#chain{ id = STId }, C2),
             ST1 = ST#sync_task{ chain = NewChain },
-            {{existing, NewChain, STId}, set_sync_task(ST1, S)};
+            {{existing, NewChain, STId, SyncMode}, set_sync_task(ST1, S)};
         Res = {inconclusive, _, _} ->
             {Res, S}
     end.
@@ -617,14 +628,18 @@ add_chain_info(Chain = #chain{ id = CId }, S) ->
             S
     end.
 
-init_sync_task(Chain) ->
-    #sync_task{ id = Chain#chain.id, chain = Chain }.
+init_sync_task(Chain, SyncMode) ->
+    #sync_task{ id = Chain#chain.id, chain = Chain, sync_mode = SyncMode }.
 
-merge_chains(#chain{ id = CId, peers = Ps1, blocks = C1 },
-             #chain{ id = CId, peers = Ps2, blocks = C2 }) ->
+merge_chains(#chain{ id = CId, peers = Ps1, blocks = C1, max_height = C1Max },
+             #chain{ id = CId, peers = Ps2, blocks = C2, max_height = C2Max }) ->
+    %% Track the top of all remote peers to guide the switch from beam to full sync mode
+    %% FIXME: consider only using trusted peers for this info - simple DoS possible?
+    MaxHeight = max(C1Max, C2Max),
     %% We sort descending...
     Cmp = fun(#chain_block{ height = H1 }, #chain_block{ height = H2 }) -> H1 >= H2 end,
     #chain{ id = CId, peers = lists:usort(Ps1 ++ Ps2),
+            max_height = MaxHeight,
             blocks = lists:umerge(Cmp, C1, C2) }.
 
 match_tasks(_Chain, [], []) ->
@@ -773,9 +788,9 @@ do_start_sync1(PeerId, RemoteHash) ->
             %% We do try really hard to identify the same chain here...
             Chain = init_chain(PeerId, Hdr),
             case known_chain(Chain) of
-                {ok, Task} ->
+                {ok, Task, SyncMode} ->
                     handle_worker(Task, {new_worker, PeerId, self()}),
-                    do_work_on_sync_task(PeerId, Task);
+                    do_work_on_sync_task(PeerId, Task, SyncMode, Chain#chain.max_height);
                 {error, Reason} ->
                     epoch_sync:info("Could not identify chain, aborting sync with ~p (~p)",
                                     [ppp(PeerId), Reason])
@@ -796,22 +811,22 @@ init_chain(ChainId, Peers, Header) ->
             PrevBlock  = #chain_block{ hash   = aec_headers:prev_key_hash(Header),
                                        height = Height - 1 },
             %% Unless we are at height 1 add previous key-block
-            #chain{ id = ChainId, peers = Peers, blocks = [Block | [PrevBlock || Height > 1]] };
+            #chain{ id = ChainId, max_height = Height, peers = Peers, blocks = [Block | [PrevBlock || Height > 1]] };
         micro ->
             Block = #chain_block{ hash   = aec_headers:prev_key_hash(Header),
                                   height = Height },
-            #chain{ id = ChainId, peers = Peers, blocks = [Block] }
+            #chain{ id = ChainId, max_height = Height, peers = Peers, blocks = [Block] }
     end.
 
 known_chain(Chain) ->
     identify_chain(known_chain(Chain, none)).
 
-identify_chain({existing, _Chain, Task}) ->
+identify_chain({existing, Chain, Task, SyncMode}) ->
     epoch_sync:debug("Already syncing chain ~p", [Task]),
-    {ok, Task};
-identify_chain({new, #chain{ blocks = [Target | _]}, Task}) ->
+    {ok, Task, SyncMode};
+identify_chain({new, #chain{ blocks = [Target | _], max_height = MaxHeight}, Task, SyncMode}) ->
     epoch_sync:info("Starting new sync task ~p target is ~1000p", [Task, pp_chain_block(Target)]),
-    {ok, Task};
+    {ok, Task, SyncMode};
 identify_chain({inconclusive, Chain, {get_header, CId, Peers, N}}) ->
     %% We need another hash for this chain, make sure whoever we ask is
     %% still on this particular chain by including a known (at higher height) hash
@@ -847,42 +862,46 @@ do_get_header_by_height([PeerId | PeerIds], N, TopHash) ->
     end.
 
 
-do_work_on_sync_task(PeerId, Task) ->
-    do_work_on_sync_task(PeerId, Task, none).
+do_work_on_sync_task(PeerId, Task, SyncMode, RemoteMaxHeight) ->
+    do_work_on_sync_task(PeerId, Task, SyncMode, RemoteMaxHeight, none).
 
-do_work_on_sync_task(PeerId, Task, LastResult) ->
+do_work_on_sync_task(PeerId, Task, SyncMode, RemoteMaxHeight, LastResult) ->
     %% epoch_sync:debug("working on ~p against ~p (Last: ~p)", [Task, ppp(PeerId), LastResult]),
     case next_work_item(Task, PeerId, LastResult) of
         take_a_break ->
             delayed_run_job(PeerId, Task, sync_tasks,
-                            fun() -> do_work_on_sync_task(PeerId, Task) end, 5000);
+                            fun() -> do_work_on_sync_task(PeerId, Task, SyncMode, RemoteMaxHeight) end, 5000);
         {agree_on_height, Chain} ->
             case agree_on_height(PeerId, Chain) of
                 {ok, AHeight, AHash} ->
                     epoch_sync:debug("Agreed upon height (~p): ~p", [ppp(PeerId), AHeight]),
                     Agreement = {agreed_height, #chain_block{ height = AHeight, hash = AHash }},
-                    do_work_on_sync_task(PeerId, Task, Agreement);
+                    do_work_on_sync_task(PeerId, Task, SyncMode, Chain#chain.max_height, Agreement);
                 {error, Reason} ->
-                    do_work_on_sync_task(PeerId, Task, {error, {agree_on_height, Reason}})
+                    do_work_on_sync_task(PeerId, Task, SyncMode, RemoteMaxHeight, {error, {agree_on_height, Reason}})
             end;
         {fill_pool, StartHash, TargetHash} ->
-            fill_pool(PeerId, StartHash, TargetHash, Task);
+            fill_pool(PeerId, StartHash, TargetHash, Task, SyncMode, RemoteMaxHeight);
         {post_blocks, Blocks} ->
+            %% FIXME: Whether a block has skipped its microblocks is a
+            %% property of the keyblock, not the sync mode. So we need to put that
+            %% info in the Keyblock record somewhere
             Res = post_blocks(Blocks),
-            do_work_on_sync_task(PeerId, Task, {post_blocks, Res});
+            do_work_on_sync_task(PeerId, Task, SyncMode, RemoteMaxHeight, {post_blocks, Res});
         {get_generation, Height, Hash} ->
             Res =
-                case do_fetch_generation(PeerId, Hash) of
+                case do_fetch_generation(PeerId, Hash, SyncMode, RemoteMaxHeight) of
                     {ok, local}     -> {get_generation, Height, Hash, PeerId, {ok, local}};
                     {ok, Block}     -> {get_generation, Height, Hash, PeerId, {ok, Block}};
                     {error, Reason} -> {error, {get_generation, Reason}}
                 end,
-            do_work_on_sync_task(PeerId, Task, Res);
+            do_work_on_sync_task(PeerId, Task, SyncMode, RemoteMaxHeight, Res);
         abort_work ->
             epoch_sync:info("~p aborting sync work against ~p", [self(), PeerId])
     end.
 
 agree_on_height(PeerId, #chain{ blocks = [#chain_block{ hash = TopHash, height = TopHeight } | _] }) ->
+    epoch_sync:info("~p agree_on_height 0 ~p", [self(), TopHeight]),
     try
         LocalHeader = aec_chain:dirty_top_header(),
         LocalHeight = aec_headers:height(LocalHeader),
@@ -904,6 +923,7 @@ agree_on_height(PeerId, #chain{ blocks = [#chain_block{ hash = TopHash, height =
 
 %% Height is a height where we disagree, so ask for Height - Step
 agree_on_height(PeerId, RemoteTop, Height, Step) ->
+    epoch_sync:info("~p agree_on_height ~p", [self(), RemoteTop]),
     NewHeight = max(aec_block_genesis:height(), Height - Step),
     RHash = get_header_by_height(PeerId, NewHeight, RemoteTop),
     case aec_chain:hash_is_connected_to_genesis(RHash) of
@@ -915,8 +935,10 @@ agree_on_height(PeerId, RemoteTop, Height, Step) ->
 
 %% We agree on Hash at MinH and disagree at MaxH
 agree_on_height(_PeerId, _RemoteTop, MinH, MaxH, Hash) when MaxH == MinH + 1 ->
+    epoch_sync:info("~p agree_on_height 1 ~p", [self(), _RemoteTop]),
     {ok, MinH, Hash};
 agree_on_height(PeerId, RemoteTop, MinH, MaxH, Hash) ->
+    epoch_sync:info("~p agree_on_height 2 ~p", [self(), RemoteTop]),
     H = (MinH + MaxH) div 2,
     RHash = get_header_by_height(PeerId, H, RemoteTop),
     case aec_chain:hash_is_connected_to_genesis(RHash) of
@@ -1011,11 +1033,11 @@ n_txs(B) ->
         'micro' -> length(aec_blocks:txs(B))
     end.
 
-fill_pool(PeerId, StartHash, TargetHash, ST) ->
+fill_pool(PeerId, StartHash, TargetHash, ST, SyncMode, MaxHeight) ->
     case peer_get_n_successors(PeerId, StartHash, TargetHash, ?MAX_HEADERS_PER_CHUNK) of
         {ok, []} ->
             aec_peer_connection:set_sync_height(PeerId, none),
-            do_get_generation(PeerId, StartHash),
+            do_get_generation(PeerId, StartHash, SyncMode, MaxHeight),
             update_sync_task({done, PeerId}, ST),
             epoch_sync:info("Sync done (according to ~p)", [ppp(PeerId)]),
             aec_events:publish(chain_sync, {chain_sync_done, PeerId});
@@ -1030,7 +1052,7 @@ fill_pool(PeerId, StartHash, TargetHash, ST) ->
                                                    , hash = Hash
                                                    , got = false
                                                    } || {Height, Hash} <- Hashes ],
-                            do_work_on_sync_task(PeerId, ST, {hash_pool, HashPool});
+                            do_work_on_sync_task(PeerId, ST, SyncMode, MaxHeight, {hash_pool, HashPool});
                         {error, {LastGoodHeight, FirstBadHeight}} ->
                             epoch_sync:info(
                               "Abort sync with ~p (bad successor height ~p after ~p)",
@@ -1062,9 +1084,21 @@ heights_are_consecutive([{FirstHeight, _} | _] = Hashes) when
                 {ok, FirstHeight},
                 tl(Hashes)).
 
-do_get_generation(PeerId, LastHash) ->
+do_get_generation(PeerId, LastHash, SyncMode, MaxHeight) ->
     case peer_get_generation(PeerId, LastHash, forward) of
-        {ok, KeyBlock, MicroBlocks, forward} ->
+        {ok, KeyBlock0, MicroBlocks0, forward} ->
+            epoch_sync:info("do_get_generation max ~p", [MaxHeight]),
+            CloseToTop = aec_blocks:height(KeyBlock0) > MaxHeight - 5,
+            epoch_sync:info("do_get_generation with ~p Microblocks topHeight = ~p Close to top = ~p", [length(MicroBlocks0), MaxHeight, CloseToTop]),
+            MicroBlocks =
+                if SyncMode == sequential orelse CloseToTop -> MicroBlocks0;
+                   true -> []
+                end,
+            KeyBlock =
+                if SyncMode == beam andalso CloseToTop -> aec_blocks:set_extra(KeyBlock0, sync, beam);
+                   SyncMode == beam -> aec_blocks:set_extra(KeyBlock0, sync, beam);
+                   true -> KeyBlock0
+                end,
             Generation = #{ key_block => KeyBlock,
                             micro_blocks => MicroBlocks,
                             dir => forward },
@@ -1073,19 +1107,31 @@ do_get_generation(PeerId, LastHash) ->
             Err
     end.
 
-do_fetch_generation(PeerId, Hash) ->
+do_fetch_generation(PeerId, Hash, SyncMode, RemoteMaxHeight) ->
     case has_generation(Hash) of
         true ->
             epoch_sync:debug("block ~p already fetched, using local copy", [pp(Hash)]),
             {ok, local};
         false ->
-            do_fetch_generation_ext(Hash, PeerId)
+            do_fetch_generation_ext(Hash, PeerId, SyncMode, RemoteMaxHeight)
     end.
 
-do_fetch_generation_ext(Hash, PeerId) ->
+do_fetch_generation_ext(Hash, PeerId, SyncMode, RemoteMaxHeight) ->
     epoch_sync:debug("we don't have the block -fetching (~p)", [pp(Hash)]),
     case peer_get_generation(PeerId, Hash, backward) of
-        {ok, KeyBlock, MicroBlocks, backward} ->
+        {ok, KeyBlock0, MicroBlocks0, backward} ->
+            CloseToTop = aec_blocks:height(KeyBlock0) > RemoteMaxHeight - 5,
+            epoch_sync:info("do_fetch_generation_ext with ~p Microblocks  Close to top = ~p", [length(MicroBlocks0), CloseToTop]),
+            MicroBlocks =
+                if SyncMode == sequential orelse CloseToTop -> MicroBlocks0;
+                   true -> []
+                end,
+            KeyBlock =
+                if SyncMode == beam andalso CloseToTop -> aec_blocks:set_extra(KeyBlock0, sync, beam);
+                   SyncMode == beam -> aec_blocks:set_extra(KeyBlock0, sync, beam);
+                   true -> KeyBlock0
+                end,
+            epoch_sync:info("do_fetch_generation_ext ~p", [KeyBlock]),
             %% Types of blocks (key vs. macro) guaranteed by deserialization.
             case header_hash(KeyBlock) =:= Hash of
                 true ->
