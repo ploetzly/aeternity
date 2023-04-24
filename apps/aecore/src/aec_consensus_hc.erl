@@ -218,7 +218,21 @@ state_pre_transform_key_node(Node, Trees) ->
                         {tuple, {{address, Beneficiary}, AddedStake}} -> %% same beneficiary!
                             cache(Beneficiary, AddedStake),
                             Trees1;
-                        crash -> Trees1
+                        {tuple, {{address, _OtherBeneficiary}, _AddedStake}} -> %% lazy leader
+                            {ok, CallDataLazy} =
+                                aeser_api_encoder:encode(contract_bytearray,
+                                                     aeb_fate_abi:create_calldata("elect_after_lazy_leader",
+                                                                                  [{address, Beneficiary}])),
+                            case call_consensus_contract_(?ELECTION_CONTRACT,
+                                                          TxEnv, Trees, %% old trees!
+                                                          CallDataLazy, "elect_after_lazy_leader", 0) of
+                                {tuple, {{address, Beneficiary}, AddedStake}} -> %% same beneficiary!
+                                    cache(Beneficiary, AddedStake),
+                                    Trees1;
+                                {error, What} ->
+                                    %% maybe a softer approach than crash and burn?
+                                    aec_conductor:throw_error({failed_to_elect_new_leader, What})
+                            end
                     end;
                 {error, What} ->
                     %% maybe a softer approach than crash and burn?
