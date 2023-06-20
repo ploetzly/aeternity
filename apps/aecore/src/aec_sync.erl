@@ -960,6 +960,7 @@ post_blocks(From, To, [#pool_item{ height = Height, got = {PeerId, Block} } | Bl
         {error, Reason} ->
             epoch_sync:info("Failed to add synced block ~p: ~p", [Height, Reason]),
             [ epoch_sync:info("Synced blocks ~p - ~p   (~s)", [From, To - 1, pp_stats(Stats)]) || To > From ],
+            epoch_sync:info("ASDF current height ~p", [aec_chain:top_height()]),
             case Reason of
                 {too_far_below_top, _, _} ->
                     {rejected, PeerId, Height};

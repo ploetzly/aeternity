@@ -29,7 +29,7 @@
 %%%=============================================================================
 
 %% External API
--export([start_link/4, stop/0]).
+-export([start_link/5, stop/0]).
 
 %% Callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -56,7 +56,8 @@
         top_height          = 0                 :: non_neg_integer(),
         sign_module         = aec_preset_keys   :: atom(), %% TODO: make it configurable
         initial_commits_heights = []            :: list(),
-        publishing_commitments = false          :: boolean() 
+        producing_blocks    = false             :: boolean(),
+        enabled_commitments = false             :: boolean() 
     }).
 -type state() :: #state{}.
 
@@ -66,10 +67,11 @@
 %%% API
 %%%=============================================================================
 %% Start the parent chain cache process
--spec start_link(non_neg_integer(), non_neg_integer(), non_neg_integer(), boolean()) ->
+-spec start_link(non_neg_integer(), non_neg_integer(), non_neg_integer(),
+                 boolean(), boolean()) ->
     {ok, pid()} | {error, {already_started, pid()}} | {error, Reason::any()}.
-start_link(Height, Size, Confirmations, IsPublishingCommitments) ->
-    Args = [Height, Size, Confirmations, IsPublishingCommitments],
+start_link(Height, Size, Confirmations, IsProducingBlocks, IsPublishingCommitments) ->
+    Args = [Height, Size, Confirmations, IsProducingBlocks, IsPublishingCommitments],
     gen_server:start_link({local, ?SERVER}, ?MODULE, Args, []).
 
 stop() ->
@@ -116,7 +118,7 @@ get_state() ->
 %%%=============================================================================
 
 -spec init([any()]) -> {ok, #state{}}.
-init([StartHeight, Size, Confirmations, BlockProducing]) ->
+init([StartHeight, Size, Confirmations, BlockProducing, EnabledCommitments]) ->
     aec_events:subscribe(top_changed),
     aec_events:subscribe(start_mining),
     aec_events:subscribe(stop_mining),
@@ -129,7 +131,8 @@ init([StartHeight, Size, Confirmations, BlockProducing]) ->
                 pc_confirmations        = Confirmations, 
                 max_size                = Size,
                 blocks                  = #{},
-                publishing_commitments  = BlockProducing,
+                producing_blocks        = BlockProducing,
+                enabled_commitments     = EnabledCommitments,
                 initial_commits_heights = InitialCommitsHeights}}.
 
 -spec handle_call(any(), any(), state()) -> {reply, any(), state()}.
@@ -217,9 +220,9 @@ handle_info({gproc_ps_event, top_changed, #{info := #{block_type := key,
 handle_info({gproc_ps_event, top_changed, _}, State) ->
     {noreply, State};
 handle_info({gproc_ps_event, start_mining, _}, State) ->
-    {noreply, State#state{publishing_commitments = true}};
+    {noreply, State#state{producing_blocks = true}};
 handle_info({gproc_ps_event, stop_mining, _}, State) ->
-    {noreply, State#state{publishing_commitments = false}};
+    {noreply, State#state{producing_blocks = false}};
 handle_info(_Info, State) ->
     lager:debug("Unhandled info: ~p", [_Info]),
     {noreply, State}.
@@ -442,6 +445,7 @@ maybe_post_initial_commitments(Block, #state{pc_confirmations = Confirmations,
             State
     end.
 
-posting_commitments_enabled(#state{publishing_commitments = Enabled}) ->
-    Enabled.
+posting_commitments_enabled(#state{enabled_commitments = Enabled,
+                                   producing_blocks = Producing}) ->
+    Enabled andalso Producing.
 

@@ -427,8 +427,13 @@ next_beneficiary() ->
         {ok, _Trees1, Call} ->
             {tuple, {{address, Leader}, _}} = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
             SignModule = get_sign_module(),
-            SignModule:set_candidate(Leader),
-            {ok, Leader};
+            case SignModule:set_candidate(Leader) of
+                {error, key_not_found} ->
+                    timer:sleep(1000),
+                    {error, not_leader};
+                ok ->
+                    {ok, Leader}
+            end;
         {error, What} ->
             %% maybe a softer approach than crash and burn?
             error({failed_to_elect_new_leader, What})
@@ -445,7 +450,7 @@ get_type() -> pos.
 get_block_producer_configs() -> [{instance_not_used,
                                   #{expected_key_block_rate => expected_key_block_rate()}}].
 
-is_leader_valid(Node, Trees, TxEnv, PrevNode) ->
+is_leader_valid(Node, Trees, TxEnv, _PrevNode) ->
     Header = aec_block_insertion:node_header(Node),
     {ok, CD} = aeb_fate_abi:create_calldata("leader", []),
     CallData = aeser_api_encoder:encode(contract_bytearray, CD),

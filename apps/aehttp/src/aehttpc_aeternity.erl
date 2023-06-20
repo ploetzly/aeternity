@@ -181,7 +181,10 @@ get_request(Path, Host, Port, Timeout) ->
             lager:debug("Req: ~p, Res: ~p with URL: ~ts", [Req, Res, Url]),
             {ok, jsx:decode(list_to_binary(Res), [return_maps])};
         {ok, {{_, 404 = _Code, _}, _, "{\"reason\":\"Block not found\"}"}} ->
-            {error, not_found}
+            {error, not_found};
+        {ok, {{_, Code, _}, _, _}} when Code > 400 ->
+            {error, not_found};
+        {error, _} -> {error, not_found}
     end
   catch E:R:S ->
     lager:info("Error: ~p Reason: ~p Stacktrace: ~p", [E, R, S]),
@@ -200,7 +203,7 @@ post_request(Path, Body, Host, Port, Timeout) ->
         {ok, {{_, 200 = _Code, _}, _, Res}} ->
             lager:debug("Req: ~p, Res: ~p with URL: ~ts", [Req, Res, Url]),
             {ok, jsx:decode(list_to_binary(Res), [return_maps])};
-        {ok, {{_, 400, _}, _, Res}} ->
+        {ok, {{_ ,400, _}, _, Res}} ->
             lager:debug("Req: ~p, Res: ~p with URL: ~ts", [Req, Res, Url]),
             {error, 400, jsx:decode(list_to_binary(Res), [return_maps])}
     end

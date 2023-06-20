@@ -18,7 +18,8 @@
          verify_fees/1,
          verify_commitments/1,
          genesis_has_commitments/1,
-         block_difficulty/1
+         block_difficulty/1,
+         elected_leader_did_not_show_up/1
         ]).
 
 -include_lib("stdlib/include/assert.hrl").
@@ -34,11 +35,16 @@
 -define(CHILD_START_HEIGHT, 10).
 -define(CHILD_CONFIRMATIONS, 0).
 -define(REWARD_DELAY, 2).
+-define(LAZY_INTERVAL, 3000).
 -define(NODE1, dev1).
 -define(NODE1_NAME, aecore_suite_utils:node_name(?NODE1)).
 
 -define(NODE2, dev2).
 -define(NODE2_NAME, aecore_suite_utils:node_name(?NODE2)).
+
+-define(LAZY_NODE, dev8).
+-define(LAZY_NODE_NAME, aecore_suite_utils:node_name(?LAZY_NODE)).
+
 
 
 -define(OWNER_PUBKEY, <<42:32/unit:8>>).
@@ -91,7 +97,11 @@ all() -> [{group, pos},
 
 groups() ->
     [{pos, [sequence], common_tests()},
-     {hc, [sequence], common_tests() ++ hc_specific_tests()}
+     {hc, [sequence], common_tests() ++ hc_specific_tests() ++ [{group, lazy_leader}]},
+     {lazy_leader, [sequence], [elected_leader_did_not_show_up
+                              %% , block difficulty is 0
+                              %% , forks
+                               ]}
     ].
 
 common_tests() ->
@@ -149,7 +159,8 @@ init_per_suite(Config0) ->
                 #{  ParentPatronPubEnc =>
                     100000000000000000000000000000000000000000000000000000000000000000000000,
                     encoded_pubkey(?ALICE) => 2100000000000000000000000000,
-                    encoded_pubkey(?BOB) => 3100000000000000000000000000
+                    encoded_pubkey(?BOB) => 3100000000000000000000000000,
+                    encoded_pubkey(?CAROL) => 3100000000000000000000000000
                 }),
             StakingContract = staking_contract_address(),
             ElectionContract = election_contract_address(),
@@ -169,17 +180,18 @@ init_per_group(Group, Config0) ->
     case Group of
         pos -> init_per_group_custom(<<"pos">>, ?CONSENSUS_POS, Config1);
         hc -> init_per_group_custom(<<"hc">>, ?CONSENSUS_HC, Config1);
+        lazy_leader -> set_up_lazy_leader_node(<<"hc">>, Config1);
         _ -> Config1
     end.
 
 init_per_group_custom(NetworkId, ?CONSENSUS_POS, Config) ->
     ElectionContract = election_contract_by_consensus(?CONSENSUS_POS),
-    build_json_files(NetworkId, ElectionContract, Config),
+    build_json_files(NetworkId, ElectionContract, Config, [?NODE1, ?NODE2]),
     %% different runs use different network ids
     Env = [ {"AE__FORK_MANAGEMENT__NETWORK_ID", binary_to_list(NetworkId)}
           ],
     aecore_suite_utils:create_config(?NODE1, Config,
-                                    node_config([?ALICE, ?BOB], ?CONSENSUS_POS),
+                                    node_config([?ALICE, ?BOB, ?CAROL], ?CONSENSUS_POS),
                                     [{add_peers, true} ]),
     aecore_suite_utils:create_config(?NODE2, Config,
                                     node_config([], ?CONSENSUS_POS),
@@ -188,10 +200,10 @@ init_per_group_custom(NetworkId, ?CONSENSUS_POS, Config) ->
     aecore_suite_utils:connect(?NODE1_NAME, []),
     aecore_suite_utils:start_node(?NODE2, Config, Env),
     aecore_suite_utils:connect(?NODE2_NAME, []),
-    Config1 = [{network_id, NetworkId}, {consensus, ?CONSENSUS_POS} | Config];
+    _Config1 = [{network_id, NetworkId}, {consensus, ?CONSENSUS_POS} | Config];
 init_per_group_custom(NetworkId, ?CONSENSUS_HC, Config) ->
     ElectionContract = election_contract_by_consensus(?CONSENSUS_HC),
-    build_json_files(NetworkId, ElectionContract, Config),
+    build_json_files(NetworkId, ElectionContract, Config, [?NODE1, ?NODE2]),
     %% different runs use different network ids
     Env = [ {"AE__FORK_MANAGEMENT__NETWORK_ID", binary_to_list(NetworkId)}
           ],
@@ -216,16 +228,6 @@ init_per_group_custom(NetworkId, ?CONSENSUS_HC, Config) ->
     NumberOfCommitments = 2,
     %% mine blocks on the parent chain and include commitments; stop right
     %% before the child chain produces a block
-%%
-%%    lists:foreach(
-%%        fun(Idx) ->
-%%            PCTopHeight = rpc(?PARENT_CHAIN_NODE1, aec_chain, top_height, []),
-%%            ct:log("Mining commitment on the parent chain, idx ~p, parent height ~p", [Idx, PCTopHeight]),
-%%            wait_for_commitments_in_pool(?PARENT_CHAIN_NODE1, NumberOfCommitments),
-%%            {ok, _} = aecore_suite_utils:mine_micro_blocks(?PARENT_CHAIN_NODE1_NAME, 1),
-%%            {ok, _} = aecore_suite_utils:mine_key_blocks(?PARENT_CHAIN_NODE1_NAME, 1)
-%%        end,
-%%       lists:seq(1, ?CHILD_CONFIRMATIONS - 1)),
     ct:log("Mining last initial commitment on the parent chain", []),
     wait_for_commitments_in_pool(?PARENT_CHAIN_NODE1, NumberOfCommitments),
     {ok, _} = aecore_suite_utils:mine_micro_blocks(?PARENT_CHAIN_NODE1_NAME, 1),
@@ -240,6 +242,49 @@ init_per_group_custom(NetworkId, ?CONSENSUS_HC, Config) ->
 
     Config1.
 
+set_up_lazy_leader_node(NetworkId, Config) ->
+    ElectionContract = election_contract_by_consensus(?CONSENSUS_HC),
+    aecore_suite_utils:make_multi(Config, [?LAZY_NODE]),
+    build_json_files(NetworkId, ElectionContract, Config, [?LAZY_NODE]),
+    %% different runs use different network ids
+    Env = [ {"AE__FORK_MANAGEMENT__NETWORK_ID", binary_to_list(NetworkId)}
+          ],
+    aecore_suite_utils:create_config(?LAZY_NODE, Config,
+                                    node_config([?CAROL], ?CONSENSUS_HC, false),
+                                    [{add_peers, true} ]),
+    aecore_suite_utils:start_node(?LAZY_NODE, Config, Env),
+    aecore_suite_utils:connect(?LAZY_NODE_NAME, []),
+    timer:sleep(1000),
+    LazyNodePeers = rpc(?LAZY_NODE, aec_peers, connected_peers, []),
+    ct:log("Connected peers ~p", [LazyNodePeers]),
+    LazyNodeVerifiedPeers = rpc(?LAZY_NODE, aec_peers, available_peers, [verified]),
+    ct:log("Verified peers ~p", [LazyNodeVerifiedPeers]),
+%%    {ok, _} = wait_same_top(?NODE1, ?LAZY_NODE),
+%%
+wait_same_top(?NODE1, ?LAZY_NODE),
+    Inspect =
+        fun(Node) ->
+            {ok, TopH} = aec_headers:hash_header(rpc(Node, aec_chain, top_header, [])),
+            ct:log("     top hash ~p", [TopH]),
+            ChainEnds = rpc(Node, aec_db, find_chain_end_hashes, []),
+            lists:foreach(
+                fun(Hash) ->
+                    {value, D} = rpc(Node, aec_db, find_block_difficulty, [Hash]),
+                    {value, H} = rpc(Node, aec_db, dirty_find_header, [Hash]),
+                    ct:log("     Chain end with ~p has difficulty ~p", [H, D]),
+                    ok
+                end,
+                ChainEnds)
+        end,
+    ct:log("Node1 point of view:", []),
+    Inspect(?NODE1),
+    ct:log("Node2 point of view:", []),
+    Inspect(?NODE2),
+    ct:log("Lazy Node point of view:", []),
+    Inspect(?LAZY_NODE),
+    {ok, _} = wait_same_top(?NODE1, ?LAZY_NODE),
+    Config.
+
 end_per_group(pos, Config) ->
     aecore_suite_utils:stop_node(?NODE1, Config),
     aecore_suite_utils:stop_node(?NODE2, Config);
@@ -247,6 +292,8 @@ end_per_group(hc, Config) ->
     aecore_suite_utils:stop_node(?NODE1, Config),
     aecore_suite_utils:stop_node(?NODE2, Config),
     aecore_suite_utils:stop_node(?PARENT_CHAIN_NODE1, Config);
+end_per_group(lazy_leader, Config) -> 
+    aecore_suite_utils:stop_node(?LAZY_NODE, Config);
 end_per_group(_Group, Config) ->
     Config.
 
@@ -328,17 +375,20 @@ mine_and_sync(Config) ->
     ok.
 
 wait_same_top() ->
-    wait_same_top(100).
+    wait_same_top(?NODE1, ?NODE2).
 
-wait_same_top(Attempts) when Attempts < 1 ->
+wait_same_top(Node1, Node2) ->
+    wait_same_top(Node1, Node2, 100).
+
+wait_same_top(_Node1, _Node2, Attempts) when Attempts < 1 ->
     {error, run_out_of_attempts};
-wait_same_top(Attempts) ->
-    case {rpc(?NODE1, aec_chain, top_block, []), rpc(?NODE2, aec_chain, top_block, [])} of
+wait_same_top(Node1, Node2, Attempts) ->
+    case {rpc(Node1, aec_chain, top_block, []), rpc(Node2, aec_chain, top_block, [])} of
         {KB, KB} -> {ok, KB};
         {KB1, KB2} ->
             ct:log("Node1 top: ~p\nNode2 top: ~p", [KB1, KB2]),
             timer:sleep(500),
-            wait_same_top(Attempts - 1)
+            wait_same_top(Node1, Node2, Attempts - 1)
     end.
 
 spend_txs(Config) ->
@@ -474,6 +524,11 @@ verify_fees(Config) ->
                                                                  ?BOB},
                                                                 Config,
                                                                 PrevHash),
+            {ok, CarolContractSPower0} = inspect_staking_contract(?ALICE,
+                                                                {staking_power,
+                                                                 ?CAROL},
+                                                                Config,
+                                                                PrevHash),
             %% gather staking_powers after reward distribution
             AliceBalance1= account_balance(pubkey(?ALICE)),
             BobBalance1 = account_balance(pubkey(?BOB)),
@@ -487,6 +542,11 @@ verify_fees(Config) ->
                                                                  ?BOB},
                                                                 Config,
                                                                 TopHash),
+            {ok, CarolContractSPower1} = inspect_staking_contract(?ALICE,
+                                                                  {staking_power,
+                                                                  ?CAROL},
+                                                                  Config,
+                                                                  TopHash),
             %% inspect who shall receive what reward
             RewardForHeight = aec_headers:height(TopHeader) - ?REWARD_DELAY,
             {ok, PrevH} = rpc(?NODE1, aec_chain, get_key_header_by_height, [RewardForHeight - 1]),
@@ -503,19 +563,21 @@ verify_fees(Config) ->
             %% calc rewards
             {{AdjustedReward1, AdjustedReward2}, _DevRewards} =
                 calc_rewards(RewardForHeight),
-            {AliceExpectedRewards, BobExpectedRewards} =
+            {AliceExpectedRewards, BobExpectedRewards, CarolExpectedRewards} =
                 lists:foldl(
-                    fun({Pubkey, Amount}, {AliceRewards0, BobRewards0}) ->
+                    fun({Pubkey, Amount}, {AliceRewards0, BobRewards0, CarolRewards0}) ->
                           case who_by_pubkey(Pubkey) of
                               ?ALICE ->
-                                  {AliceRewards0 + Amount, BobRewards0};
+                                  {AliceRewards0 + Amount, BobRewards0, CarolRewards0};
                               ?BOB ->
-                                  {AliceRewards0, BobRewards0 + Amount};
+                                  {AliceRewards0, BobRewards0 + Amount, CarolRewards0};
+                              ?CAROL ->
+                                  {AliceRewards0, BobRewards0, CarolRewards0 + Amount};
                               genesis ->
-                                  {AliceRewards0, BobRewards0}
+                                  {AliceRewards0, BobRewards0, CarolRewards0}
                           end
                     end,
-                    {0, 0},
+                    {0, 0, 0},
                     [{Beneficiary1, AdjustedReward1},
                     {Beneficiary2, AdjustedReward2}]),
             AliceReward = AliceContractSPower1 - AliceContractSPower0,
@@ -527,7 +589,12 @@ verify_fees(Config) ->
             ct:log("Bob expected rewards: ~p, actual rewards: ~p",
                   [BobExpectedRewards, BobReward]),
             {BobExpectedReward, BobExpectedReward} =
-                {BobExpectedRewards, BobReward}
+                {BobExpectedRewards, BobReward},
+            CarolReward = CarolContractSPower1 - CarolContractSPower0,
+            ct:log("Carol expected rewards: ~p, actual rewards: ~p",
+                  [CarolExpectedRewards, CarolReward]),
+            {CarolExpectedReward, CarolExpectedReward} =
+                {CarolExpectedRewards, CarolReward}
         end,
     %% test a couple of empty generations - there are no fees, only block
     %% rewards
@@ -650,6 +717,24 @@ block_difficulty(Config) ->
         lists:seq(1, 20)), %% test with 20 elections
     ok.
 
+elected_leader_did_not_show_up(Config) ->
+    aecore_suite_utils:stop_node(?NODE1, Config), %% stop the block producer
+    TopHeader0 = rpc(?NODE2, aec_chain, top_header, []),
+    {TopHeader0, TopHeader0} = {rpc(?LAZY_NODE, aec_chain, top_header, []),
+                                TopHeader0},
+    ct:log("Start header: ~p", [TopHeader0]),
+    %% produce a block on the parent chain
+    produce_blocks(?PARENT_CHAIN_NODE1, ?PARENT_CHAIN_NODE1_NAME,
+                    parent, 1, ?CONSENSUS_HC),
+    timer:sleep(2 * ?LAZY_INTERVAL + 100),
+    %%{ok, [KB]} = produce_blocks(?LAZY_NODE, ?LAZY_NODE_NAME, child, 1, ?config(consensus, Config)),
+    TopHeader1 = rpc(?LAZY_NODE, aec_chain, top_header, []),
+    ct:log("Lazy header: ~p", [TopHeader1]),
+    TopHeader1 = rpc(?NODE2, aec_chain, top_header, []),
+    ok.
+
+
+
 pubkey({Pubkey, _, _}) -> Pubkey.
 
 privkey({_, Privkey, _}) -> Privkey.
@@ -659,10 +744,12 @@ name({_, _, Name}) -> Name.
 who_by_pubkey(Pubkey) ->
     Alice = pubkey(?ALICE),
     Bob = pubkey(?BOB),
+    Carol = pubkey(?CAROL),
     Genesis = ?GENESIS_BENFICIARY,
     case Pubkey of
         Alice -> ?ALICE;
         Bob -> ?BOB;
+        Carol -> ?CAROL;
         Genesis -> genesis;
         _  -> error(unknown_beneficiary)
     end.
@@ -699,9 +786,9 @@ seed_account(Node, NodeName, RecpipientPubkey, Amount, NetworkId) ->
     MineFun = fun(Tx) -> mine_tx_no_cheating(Node, Tx) end,
     seed_account(Node, NodeName, RecpipientPubkey, Amount, NetworkId, MineFun).
 
-seed_account_pow(Node, NodeName, RecpipientPubkey, Amount, NetworkId) ->
-    MineFun = fun(Tx) -> mine_tx(NodeName, Tx) end,
-    seed_account(Node, NodeName, RecpipientPubkey, Amount, NetworkId, MineFun).
+%%seed_account_pow(Node, NodeName, RecpipientPubkey, Amount, NetworkId) ->
+%%    MineFun = fun(Tx) -> mine_tx(NodeName, Tx) end,
+%%    seed_account(Node, NodeName, RecpipientPubkey, Amount, NetworkId, MineFun).
 
 
 seed_account(Node, NodeName, RecpipientPubkey, Amount, NetworkId, MineFun) ->
@@ -726,11 +813,11 @@ seed_account(Node, NodeName, RecpipientPubkey, Amount, NetworkId, MineFun) ->
     MineFun(SignedTx),
     {ok, SignedTx}.
 
-mine_tx(NodeName, SignedTx) ->
-    TxHash = aeser_api_encoder:encode(tx_hash, aetx_sign:hash(SignedTx)),
-    aecore_suite_utils:mine_blocks_until_txs_on_chain(NodeName,
-                                                      [TxHash],
-                                                      10). %% max keyblocks
+%%mine_tx(NodeName, SignedTx) ->
+%%    TxHash = aeser_api_encoder:encode(tx_hash, aetx_sign:hash(SignedTx)),
+%%    aecore_suite_utils:mine_blocks_until_txs_on_chain(NodeName,
+%%                                                      [TxHash],
+%%                                                      10). %% max keyblocks
 
 mine_tx_no_cheating(Node, SignedTx) ->
     mine_tx_no_cheating(Node, SignedTx, 100).
@@ -881,7 +968,7 @@ calc_rewards(RewardForHeight) ->
            [AdjustedReward1, AdjustedReward2]),
     Res.
 
-build_json_files(NetworkId, ElectionContract, Config) ->
+build_json_files(NetworkId, ElectionContract, Config, NodesList) ->
     Pubkey = ?OWNER_PUBKEY,
     {_PatronPriv, PatronPub} = aecore_suite_utils:sign_keys(?NODE1),
     ct:log("Patron is ~p", [aeser_api_encoder:encode(account_pubkey, PatronPub)]),
@@ -889,7 +976,6 @@ build_json_files(NetworkId, ElectionContract, Config) ->
         fun(P) ->
             binary_to_list(aeser_api_encoder:encode(account_pubkey, P))
         end,
-
     %% create staking contract
     MinValidatorAmt = integer_to_list(trunc(math:pow(10,18) * math:pow(10, 6))), %% 1 mln AE
     MinStakeAmt = integer_to_list(trunc(math:pow(10,18) * 1)), %% 1 AE
@@ -897,7 +983,6 @@ build_json_files(NetworkId, ElectionContract, Config) ->
     OnlineDelay = "0",
     StakeDelay = "0",
     UnstakeDelay = "0",
-
     #{ <<"pubkey">> := StakingValidatorContract} = C0
         = contract_create_spec("StakingValidator",
                                 [EncodePub(Pubkey), UnstakeDelay], 0, 1, Pubkey),
@@ -938,22 +1023,32 @@ build_json_files(NetworkId, ElectionContract, Config) ->
                             ?INITIAL_STAKE, pubkey(?BOB), 1),
     Call3 =
         contract_call_spec(SCId, ?STAKING_CONTRACT,
+                            "new_validator", [],
+                            ?INITIAL_STAKE, pubkey(?CAROL), 1),
+    Call4  =
+        contract_call_spec(SCId, ?STAKING_CONTRACT,
                             "set_online", [], 0, pubkey(?ALICE), 2),
-    Call4 =
+    Call5  =
         contract_call_spec(SCId, ?STAKING_CONTRACT,
                             "set_online", [], 0, pubkey(?BOB), 2),
-    Call5 =
-        contract_call_spec(SCId, ?STAKING_CONTRACT,
-                            "set_validator_name", ["\"Alice\""], 0, pubkey(?ALICE), 3),
     Call6 =
         contract_call_spec(SCId, ?STAKING_CONTRACT,
-                            "set_validator_name", ["\"Bob\""], 0, pubkey(?BOB), 3),
+                            "set_online", [], 0, pubkey(?CAROL), 2),
     Call7 =
+        contract_call_spec(SCId, ?STAKING_CONTRACT,
+                            "set_validator_name", ["\"Alice\""], 0, pubkey(?ALICE), 3),
+    Call8 =
+        contract_call_spec(SCId, ?STAKING_CONTRACT,
+                            "set_validator_name", ["\"Bob\""], 0, pubkey(?BOB), 3),
+    Call9 =
+        contract_call_spec(SCId, ?STAKING_CONTRACT,
+                            "set_validator_name", ["\"Carol\""], 0, pubkey(?CAROL), 3),
+    Call10 =
         contract_call_spec(SCId, ?STAKING_CONTRACT,
                             "set_validator_description",
                             ["\"Alice is a really awesome validator and she had set a description of her great service to the network.\""], 0,
                             pubkey(?ALICE), 4),
-    Call8 =
+    Call11 =
         contract_call_spec(SCId, ?STAKING_CONTRACT,
                             "set_validator_avatar_url",
                             ["\"https://aeternity.com/images/aeternity-logo.svg\""], 0,
@@ -967,39 +1062,42 @@ build_json_files(NetworkId, ElectionContract, Config) ->
     %%  C) something else
     BRI = <<"ak_2KAcA2Pp1nrR8Wkt3FtCkReGzAi8vJ9Snxa4PcmrthVx8AhPe8">>,
     {ok, BRIPub} = aeser_api_encoder:safe_decode(account_pubkey, BRI),
-    Call9 =
+    Call12 =
         contract_call_spec(SCId, ?STAKING_CONTRACT,
                             "new_validator", [],
                             ?INITIAL_STAKE, BRIPub, 1),
-    Call10 =
+    Call13 =
         contract_call_spec(SCId, ?STAKING_CONTRACT,
                             "set_validator_description",
                             ["\"This validator is offline. She can never become a leader. She has no name set. She is receiving the BRI rewards\""],
                             0, BRIPub, 2),
     %% keep the BRI offline
     AllCalls =  [Call1, Call2, Call3, Call4, Call5, Call6,
-		 Call7, Call8, Call9,
-		 Call10],
+		 Call7, Call8, Call9, Call10, Call11, Call12, Call13],
     Subdir =
         case aect_test_utils:latest_protocol_version() of
             ?IRIS_PROTOCOL_VSN -> "iris";
             ?CERES_PROTOCOL_VSN -> "ceres"
         end,
-    aecore_suite_utils:create_seed_file([?NODE1, ?NODE2],
+    aecore_suite_utils:create_seed_file(NodesList,
         Config,
         Subdir, binary_to_list(NetworkId) ++ "_contracts.json",
         #{<<"contracts">> => [C0, SC, EC], <<"calls">> => AllCalls}),
-    aecore_suite_utils:create_seed_file([?NODE1, ?NODE2],
+    aecore_suite_utils:create_seed_file(NodesList,
         Config,
         Subdir, binary_to_list(NetworkId) ++ "_accounts.json",
         #{  <<"ak_2evAxTKozswMyw9kXkvjJt3MbomCR1nLrf91BduXKdJLrvaaZt">> => 1000000000000000000000000000000000000000000000000,
             encoded_pubkey(?ALICE) => 2100000000000000000000000000,
             encoded_pubkey(?BOB) => 3100000000000000000000000000,
+            encoded_pubkey(?CAROL) => 4100000000000000000000000000,
             BRI => 2000000000000000000000000000
          }),
     ok.
 
 node_config(PotentialStakers, Consensus) ->
+    node_config(PotentialStakers, Consensus, true).
+
+node_config(PotentialStakers, Consensus, ProducingCommitments) ->
     Stakers =
         case Consensus of
             ?CONSENSUS_POS ->
@@ -1046,8 +1144,10 @@ node_config(PotentialStakers, Consensus) ->
                                             <<"user">> => <<"test">>,
                                             <<"password">> => <<"Pass">>}
                                     ]
-                            }
-                        }
+                            },
+                        <<"producing_commitments">> => ProducingCommitments
+                        },
+                    <<"time_till_declaring_lazy_leader">> => ?LAZY_INTERVAL
                         
                  }
         end,
@@ -1071,6 +1171,7 @@ node_config(PotentialStakers, Consensus) ->
         <<"mining">> =>
             #{<<"micro_block_cycle">> => 1,
             <<"autostart">> => true,
+            %%<<"autostart">> => ProducingCommitments,
             <<"beneficiary_reward_delay">> => ?REWARD_DELAY
         }}.  %% this relies on certain nonce numbers
 validator_pool_contract_address() ->
@@ -1155,25 +1256,6 @@ wait_for_commitments_in_pool(Node, Cnt, Attempts) ->
             timer:sleep(30),
             wait_for_commitments_in_pool(Node, Cnt, Attempts - 1)
     end.
-
-produce_validator_tx() ->
-    Who = ?BOB,
-    SCId = staking_contract_address(),
-    Tx =
-        contract_call(SCId, ?STAKING_CONTRACT,
-                            "set_validator_avatar_url",
-                            ["\"https://pbs.twimg.com/profile_images/1338340549804380160/A3oKPQuq_400x400.jpg\""], 0,
-                            pubkey(Who), 4),
-    Bin0 = aetx:serialize_to_binary(Tx),
-    Bin = aec_hash:hash(signed_tx, Bin0), %% since we are in IRIS or CERES context, we sign th hash
-    NetworkId = <<"ae_smart_contract_test">>,
-    BinForNetwork = <<NetworkId/binary, Bin/binary>>,
-    Signatures = [ enacl:sign_detached(BinForNetwork, privkey(Who))],
-    SignedTx = aetx_sign:new(Tx, Signatures),
-    aeser_api_encoder:encode(transaction, aetx_sign:serialize_to_binary(SignedTx)).
-
-get_commitments(GenerationHeight) ->
-    get_commitments(GenerationHeight, GenerationHeight).
 
 get_commitments(From, To) ->
     {ok, Blocks} = get_generations(?PARENT_CHAIN_NODE1, From, To + 1),

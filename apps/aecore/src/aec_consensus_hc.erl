@@ -99,8 +99,16 @@ start(Config, #{block_production := BlockProduction}) ->
             <<"polling">> :=
                 #{  <<"fetch_interval">> := FetchInterval,
                     <<"nodes">> := Nodes0
-                 } = Polling
-          }} = Config,
+                 } = Polling,
+            <<"producing_commitments">> := ProducingCommitments
+          },
+     <<"time_till_declaring_lazy_leader">> := _TimeTillDeclaringLazy
+     } = Config,
+    %% assert the boolean type
+    case ProducingCommitments of
+        true -> ok;
+        false -> ok
+    end,
     CacheSize = maps:get(<<"cache_size">>, Polling, 200),
     Stakers =
         lists:map(
@@ -147,7 +155,8 @@ start(Config, #{block_production := BlockProduction}) ->
                                             ParentHosts, NetworkId,
                                             SignModule, PCSpendPubkey]),
     start_dependency(aec_parent_chain_cache, [StartHeight, CacheSize,
-                                              Confirmations, BlockProduction]),
+                                              Confirmations, BlockProduction,
+                                             ProducingCommitments]),
     ok.
 
 start_dependency(Mod, Args) ->
@@ -189,11 +198,14 @@ dirty_validate_micro_node_with_ctx(_Node, _Block, _Ctx) -> ok.
 %% Custom state transitions
 state_pre_transform_key_node_consensus_switch(_Node, Trees) -> Trees.
 state_pre_transform_key_node(Node, Trees) ->
+    epoch_sync:info("ASDF AGH Start",[]),
     Header = aec_block_insertion:node_header(Node),
-    %% TODO
     Beneficiary = aec_headers:beneficiary(Header),
-
-    {TxEnv, _Trees} = aetx_env:tx_env_and_trees_from_top(aetx_transaction),
+    {ok, Hash} = aec_headers:hash_header(Header),
+    TxEnv = aetx_env:tx_env_from_key_header(Header,
+                                            Hash,
+                                            aec_headers:time_in_msecs(Header),
+                                            aec_headers:prev_hash(Header)),
     %% TODO: discuss which is the correct height to pass: the new or the
     %% previous one. At this point since there is no key block hash yet, it
     %% makes sense to base the tx call on the previous height altogether
@@ -201,8 +213,10 @@ state_pre_transform_key_node(Node, Trees) ->
     PCHeight = pc_height(Height + 1), %% next parent chain block!
     case aec_parent_chain_cache:get_block_by_height(PCHeight) of
         {error, not_in_cache} ->
+            epoch_sync:info("ASDF AGH not synced",[]),
             aec_conductor:throw_error(parent_chain_block_not_synced);
         {error, {not_enough_confirmations, Block}} ->
+            epoch_sync:info("ASDF AGH not enough confirmations",[]),
             aec_conductor:throw_error({not_enough_confirmations, aec_parent_chain_block:height(Block)});
         {ok, Block} ->
             Entropy = aec_parent_chain_block:hash(Block),
@@ -212,31 +226,24 @@ state_pre_transform_key_node(Node, Trees) ->
                                                      CommitmentsSophia
                                                     ]),
             CallData = aeser_api_encoder:encode(contract_bytearray, CD),
-            case call_consensus_contract_(?ELECTION_CONTRACT, TxEnv, Trees, CallData, "elect", 0) of
+            try call_consensus_contract_(?ELECTION_CONTRACT, TxEnv, Trees, CallData, "elect", 0) of
                 {ok, Trees1, Call} ->
                     case aeb_fate_encoding:deserialize(aect_call:return_value(Call)) of
                         {tuple, {{address, Beneficiary}, AddedStake}} -> %% same beneficiary!
+                            epoch_sync:info("ASDF AGH height ~p correct leader
+                                            ~p",[Height, Beneficiary]),
                             cache(Beneficiary, AddedStake),
                             Trees1;
-                        {tuple, {{address, _OtherBeneficiary}, _AddedStake}} -> %% lazy leader
-                            {ok, CallDataLazy} =
-                                aeser_api_encoder:encode(contract_bytearray,
-                                                     aeb_fate_abi:create_calldata("elect_after_lazy_leader",
-                                                                                  [{address, Beneficiary}])),
-                            case call_consensus_contract_(?ELECTION_CONTRACT,
-                                                          TxEnv, Trees, %% old trees!
-                                                          CallDataLazy, "elect_after_lazy_leader", 0) of
-                                {tuple, {{address, Beneficiary}, AddedStake}} -> %% same beneficiary!
-                                    cache(Beneficiary, AddedStake),
-                                    Trees1;
-                                {error, What} ->
-                                    %% maybe a softer approach than crash and burn?
-                                    aec_conductor:throw_error({failed_to_elect_new_leader, What})
-                            end
+                        {tuple, {{address, OtherBeneficiary}, _AddedStake}} -> %% lazy leader
+                            epoch_sync:info("ASDF AGH height ~p lazy leader ~p, correct is ~p",[Height, OtherBeneficiary, Beneficiary]),
+                            elect_lazy_leader(Beneficiary, TxEnv, Trees) %% initial trees!!!
                     end;
                 {error, What} ->
-                    %% maybe a softer approach than crash and burn?
-                    aec_conductor:throw_error({failed_to_elect_new_leader, What})
+                    lager:warning("Consensus contract failed with ~p", [What]),
+                    elect_lazy_leader(Beneficiary, TxEnv, Trees) %% initial trees!!!
+            catch error:{consensus_call_failed, {error, Why}} ->
+                    lager:warning("Consensus contract failed with ~p", [Why]),
+                    elect_lazy_leader(Beneficiary, TxEnv, Trees) %% initial trees!!!
             end
     end.
 cache(Leader, AddedStake) ->
@@ -401,7 +408,8 @@ assert_key_target_range(_) ->
 
 key_header_difficulty(H) ->
     Target = aec_headers:target(H),
-    aeminer_pow:scientific_to_integer(Target).
+    Difficulty = aeminer_pow:scientific_to_integer(Target),
+    Difficulty.
 
 %% This is initial height; if neeeded shall be reinit at fork height
 election_contract_pubkey() ->
@@ -535,7 +543,8 @@ call_consensus_contract_(ContractType, TxEnv, Trees, EncodedCallData, Keyword, A
                                                  Calls),
             case aect_call:return_type(Call) of
                 ok -> pass;
-                error -> error({consensus_call_failed, aect_call:return_value(Call)})
+                revert -> error({consensus_call_failed, {revert, aect_call:return_value(Call)}});
+                error -> error({consensus_call_failed, {error, aect_call:return_value(Call)}})
             end,
             %% prune the call being produced. If not done, the fees for it
             %% would be redistributed to the corresponding leaders
@@ -546,10 +555,12 @@ call_consensus_contract_(ContractType, TxEnv, Trees, EncodedCallData, Keyword, A
     end.
 
 beneficiary() ->
-    aeu_ets_cache:get(
-        ?ETS_CACHE_TABLE,
-        current_leader,
-        fun beneficiary_/0).
+    beneficiary_().
+
+    %%aeu_ets_cache:get(
+    %%    ?ETS_CACHE_TABLE,
+    %%    current_leader,
+    %%    fun beneficiary_/0).
 
 beneficiary_() ->
     {TxEnv, Trees} = aetx_env:tx_env_and_trees_from_top(aetx_transaction),
@@ -582,18 +593,23 @@ next_beneficiary() ->
                                                      CommitmentsSophia
                                                     ]),
             CallData = aeser_api_encoder:encode(contract_bytearray, CD),
-            {ok, _Trees1, Call} = call_consensus_contract_(?ELECTION_CONTRACT,
-                                                            TxEnv, Trees,
-                                                            CallData,
-                                                            "elect_next", 0),
-            {tuple, {{address, Leader}, _Stake}}  = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
-            SignModule = get_sign_module(),
-            case SignModule:set_candidate(Leader) of
-                {error, key_not_found} ->
+            try call_consensus_contract_(?ELECTION_CONTRACT, TxEnv, Trees, CallData, "elect_next", 0) of
+                {ok, _Trees1, Call} ->
+                    {tuple, {{address, Leader}, _Stake}}  = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
+                    SignModule = get_sign_module(),
+                    case SignModule:set_candidate(Leader) of
+                        {error, key_not_found} ->
+                            timer:sleep(1000),
+                            {error, not_leader};
+                        ok ->
+                            {ok, Leader}
+                    end;
+                {error, _} ->
                     timer:sleep(1000),
-                    {error, not_leader};
-                ok ->
-                    {ok, Leader}
+                    {error, not_leader}
+            catch error:{consensus_call_failed, {error, _}} ->
+                    timer:sleep(1000),
+                    {error, not_leader}
             end;
         {error, _Err} ->
             lager:debug("Unable to pick the next leader for height ~p, parent height ~p; reason is ~p",
@@ -602,7 +618,13 @@ next_beneficiary() ->
             {error, not_in_cache}
     end.
 
-lazy_leader_time_delta() -> 1000. %% TODO!!!!: interval and key!!!
+lazy_leader_time_delta() ->
+    {ok, Interval} =
+        aeu_env:user_config([<<"chain">>, <<"consensus">>,
+                            <<"0">>,
+                            <<"config">>,
+                            <<"time_till_declaring_lazy_leader">>]),
+    Interval.
 
 allow_lazy_leader() ->
     {true, lazy_leader_time_delta()}.
@@ -768,3 +790,22 @@ encode_commtiments(Block) ->
             #{},
             Commitments),
     aeb_fate_data:make_map(Commitments1).
+
+elect_lazy_leader(Beneficiary, TxEnv, Trees) ->
+    {ok, CDLazy} = aeb_fate_abi:create_calldata("elect_after_lazy_leader", [aefa_fate_code:encode_arg({address, Beneficiary})]),
+    CallDataLazy = aeser_api_encoder:encode(contract_bytearray, CDLazy),
+    case call_consensus_contract_(?ELECTION_CONTRACT,
+                                TxEnv, Trees,
+                                CallDataLazy, "elect_after_lazy_leader", 0) of
+        {ok, Trees2, Call2} ->
+            case aeb_fate_encoding:deserialize(aect_call:return_value(Call2)) of
+                {tuple, {{address, Beneficiary}, AddedStake}} -> %% same beneficiary!
+                    cache(Beneficiary, AddedStake),
+                    Trees2;
+                {error, What} ->
+                    %% maybe a softer approach than crash and burn?
+                    aec_conductor:throw_error({failed_to_elect_new_leader, What})
+            end;
+        {error, What} ->
+            aec_conductor:throw_error({failed_to_elect_new_leader, What})
+    end.

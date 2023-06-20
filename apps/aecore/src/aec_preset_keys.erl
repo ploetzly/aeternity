@@ -163,7 +163,7 @@ handle_call({set_candidate, Pubkey}, _From, #state{} = State) ->
 handle_call(set_random_candidate, _From, #state{} = State) ->
     case get_random_pubkey(State) of
         {ok, Pubkey} ->
-            {reply, ok, State#state{candidate = Pubkey}};
+            {reply, {ok, Pubkey}, State#state{candidate = Pubkey}};
         error ->
             {reply, {error, not_found}, State}
     end;

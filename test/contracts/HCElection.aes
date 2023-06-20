@@ -37,8 +37,13 @@ main contract HCElection =
 
   stateful entrypoint elect_after_lazy_leader(new_leader : address) =
     assert_protocol_call()
+    let sorted0 = state.main_staking_ct.sorted_validators() 
+    let (sorted1, total_s, _)  = List.foldl(filter_posted_commitments, ([], 0, [new_leader]), sorted0)
+    let unknown_validator = List.is_empty(sorted1)
+    require(unknown_validator == false, "Must be a validator")
     put(state{ leader = new_leader, entropy = "lazy_leader", added_stake = 0})
     (new_leader, 0)
+        
 
   entrypoint elect_next(entropy_str : string, commitments : map(hash, list(address))) =
     let (leader, staking_power) = elect_(entropy_str, commitments)

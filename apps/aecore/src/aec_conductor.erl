@@ -556,7 +556,8 @@ get_next_beneficiary(Consensus, TopHeader) ->
                             end;
                         false ->
                             NotLeader
-                    end
+                    end;
+                false -> NotLeader
             end
     end.
 
