@@ -41,7 +41,7 @@
         , dirty_validate_micro_node_with_ctx/3
         %% State transition
         , state_pre_transform_key_node_consensus_switch/2
-        , state_pre_transform_key_node/2
+        , state_pre_transform_key_node/3
         , state_pre_transform_micro_node/2
         %% Block rewards
         , state_grant_reward/4
@@ -130,7 +130,7 @@ dirty_validate_micro_node_with_ctx(_Node, _Block, _Ctx) -> ok.
 %% -------------------------------------------------------------------
 %% Custom state transitions
 state_pre_transform_key_node_consensus_switch(_Node, Trees) -> Trees.
-state_pre_transform_key_node(Node, Trees) ->
+state_pre_transform_key_node(Node, _PrevNode, Trees) ->
     {ok, CD} = aeb_fate_abi:create_calldata("elect", []),
     CallData = aeser_api_encoder:encode(contract_bytearray, CD),
     case call_consensus_contract(?ELECTION_CONTRACT, Node, Trees, CallData, "elect()") of

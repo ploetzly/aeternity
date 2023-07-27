@@ -212,6 +212,9 @@ handle_info(check_parent, #state{parent_hosts = ParentNodes,
                 %% - Call the smart contract to elect new leader.
                 %% - Notify conductor of new status
                 NewParentTop;
+            {error, not_found} ->
+                lager:warning("Parent nodes did not respond?", []),
+                ParentTop;
             {error, no_parent_chain_agreement} ->
                 lager:warning("Parent nodes are unable to reach consensus", []),
                 ParentTop
@@ -243,6 +246,7 @@ fetch_parent_tops(Mod, ParentNodes, Seed, State) ->
         end,
     Fun = fun(Parent) -> fetch_block(FetchFun, Parent, State) end,
     {Good, Errors} = aeu_lib:pmap(Fun, ParentNodes, 10000),
+    lager:warning("ASDF parent tops:\nGood: ~p\nErrors ~p",[ Good, Errors]),
     responses_consensus(Good, Errors, length(ParentNodes)).
 
 fetch_block_by_hash(Hash, Mod, ParentNodes, Seed, State) ->
@@ -297,8 +301,10 @@ responses_consensus(Good0, _Errors, TotalCount) ->
     NotFoundsCnt = length([1 || {error, not_found} <- Good0]),
     case maps:size(Counts) =:= 0 of
         true when NotFoundsCnt > MinRequired ->
+            lager:warning("ASDF ~p/~p Parent chain nodes responded with a not_found", [NotFoundsCnt, MinRequired]),
             {error, not_found};
         true ->
+            lager:warning("ASDF no Parent chain nodes responded with an answer", []),
             {error, no_parent_chain_agreement};
         false ->
             {MostReturnedResult, Qty} =

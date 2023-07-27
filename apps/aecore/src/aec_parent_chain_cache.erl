@@ -48,16 +48,17 @@
 -record(state,
     {
         child_top_height                        :: non_neg_integer(),
+        child_top_hash                          :: binary(),
         child_start_height                      :: non_neg_integer(),
-        pc_confirmations                        :: non_neg_integer(),
         max_size                                :: non_neg_integer(),
         blocks              = #{}               :: #{non_neg_integer() => aec_parent_chain_block:block()},
         blocks_hash_index   = #{}               :: #{aec_parent_chain_block:hash() => non_neg_integer()},
         top_height          = 0                 :: non_neg_integer(),
         sign_module         = aec_preset_keys   :: atom(), %% TODO: make it configurable
-        initial_commits_heights = []            :: list(),
         producing_blocks    = false             :: boolean(),
-        enabled_commitments = false             :: boolean() 
+        enabled_commitments = false             :: boolean(),
+        is_syncing          = false             :: boolean(),
+        posted_commitment   = false             :: boolean()
     }).
 -type state() :: #state{}.
 
@@ -70,8 +71,8 @@
 -spec start_link(non_neg_integer(), non_neg_integer(), non_neg_integer(),
                  boolean(), boolean()) ->
     {ok, pid()} | {error, {already_started, pid()}} | {error, Reason::any()}.
-start_link(Height, Size, Confirmations, IsProducingBlocks, IsPublishingCommitments) ->
-    Args = [Height, Size, Confirmations, IsProducingBlocks, IsPublishingCommitments],
+start_link(Height, Size, _Confirmations, IsProducingBlocks, IsPublishingCommitments) ->
+    Args = [Height, Size, IsProducingBlocks, IsPublishingCommitments],
     gen_server:start_link({local, ?SERVER}, ?MODULE, Args, []).
 
 stop() ->
@@ -82,28 +83,24 @@ post_block(Block) ->
     gen_server:cast(?SERVER, {post_block, Block}).
 
 -spec get_block_by_height(non_neg_integer()) -> {ok, aec_parent_chain_block:block()}
-                                              | {error, not_in_cache}
-                                              | {error, {not_enough_confirmations, aec_parent_chain_block:block()}}.
+                                              | {error, not_in_cache}.
 get_block_by_height(Height) ->
     case gen_server:call(?SERVER, {get_block_by_height, Height}) of
         {ok, _B} = OK -> OK;
         {error, not_in_cache} = Err ->
-            Err;
-        {error, {not_enough_confirmations, _}} = Err -> Err
+            Err
     end.
 
 -spec get_commitments(binary()) -> {ok, list()}
                                 | {error, not_in_cache}
-                                | {error, not_fetched}
-                                | {error, {not_enough_confirmations, aec_parent_chain_block:block()}}.
+                                | {error, not_fetched}.
 get_commitments(Hash) ->
     case gen_server:call(?SERVER, {get_commitments, Hash}) of
         {ok, _B} = OK -> OK;
         {error, not_in_cache} = Err ->
             Err;
         {error, not_fetched} = Err ->
-            Err;
-        {error, {not_enough_confirmations, _}} = Err -> Err
+            Err
     end.
 
 
@@ -118,54 +115,42 @@ get_state() ->
 %%%=============================================================================
 
 -spec init([any()]) -> {ok, #state{}}.
-init([StartHeight, Size, Confirmations, BlockProducing, EnabledCommitments]) ->
+init([StartHeight, Size, BlockProducing, EnabledCommitments]) ->
     aec_events:subscribe(top_changed),
     aec_events:subscribe(start_mining),
     aec_events:subscribe(stop_mining),
-    ChildHeight = aec_chain:top_height(),
+    aec_events:subscribe(chain_sync),
+    TopHeader = aec_chain:top_header(),
+    ChildHeight = aec_headers:height(TopHeader), 
+    ChildHash = aec_headers:hash_header(TopHeader),
     true = is_integer(ChildHeight),
-    InitialCommitsHeights = lists:seq(StartHeight, StartHeight + Confirmations - 1),
     self() ! initialize_cache,
     {ok, #state{child_start_height      = StartHeight,
                 child_top_height        = ChildHeight,
-                pc_confirmations        = Confirmations, 
+                child_top_hash          = ChildHash,
                 max_size                = Size,
                 blocks                  = #{},
                 producing_blocks        = BlockProducing,
-                enabled_commitments     = EnabledCommitments,
-                initial_commits_heights = InitialCommitsHeights}}.
+                enabled_commitments     = EnabledCommitments
+                }}.
 
 -spec handle_call(any(), any(), state()) -> {reply, any(), state()}.
-handle_call({get_block_by_height, Height}, _From,
-            #state{pc_confirmations = Confirmations,
-                   top_height = TopHeight } = State) ->
+handle_call({get_block_by_height, Height}, _From, State) ->
     Reply = 
         case get_block(Height, State) of
             {error, _} = Err -> Err;
-            {ok, Block} when Height > TopHeight - Confirmations ->
-                {error, {not_enough_confirmations, Block}};
             {ok, _Block} = OK -> OK
         end,
     {reply, Reply, State};
-handle_call({get_commitments, Hash}, _From,
-            #state{pc_confirmations = Confirmations,
-                   top_height = TopHeight } = State) ->
+handle_call({get_commitments, Hash}, _From, State) ->
     Reply = 
         case get_block_height_by_hash(Hash, State) of
             {error, _} = Err -> Err;
             {ok, Height} ->
                 {ok, Block} = get_block(Height, State),
-                case Height > TopHeight - Confirmations of
-                    true ->
-                        case aec_parent_chain_block:commitments(Block) of
-                            error -> {error, {not_enough_confirmations, not_fetched}}; %% TODO: maybe request them?
-                            {ok, _Commitments} = Ok -> {error, {not_enough_confirmations, Ok}}
-                        end;
-                    false ->
-                        case aec_parent_chain_block:commitments(Block) of
-                            error -> {error, not_fetched}; %% TODO: maybe request them?
-                            {ok, _Commitments} = Ok -> Ok
-                        end
+                case aec_parent_chain_block:commitments(Block) of
+                    error -> {error, not_fetched}; %% TODO: maybe request them?
+                    {ok, _Commitments} = Ok -> Ok
                 end
         end,
     {reply, Reply, State};
@@ -179,7 +164,16 @@ handle_call(_Request, _From, State) ->
 -spec handle_cast(any(), state()) -> {noreply, state()}.
 handle_cast({post_block, Block}, #state{} = State0) ->
     State = post_block(Block, State0),
-    State1 = maybe_post_initial_commitments(Block, State),
+    Height = aec_parent_chain_block:height(Block),
+    lager:warning("ASDF post_block with height ~p, old top: ~p, new top: ~p",
+                  [Height, State0#state.top_height,State#state.top_height]),
+    State1 =
+        case State#state.top_height > State0#state.top_height of
+            true ->
+                maybe_post_initial_commitments(Block, State);
+            false -> 
+                State
+        end,
     {noreply, State1};
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -207,7 +201,9 @@ handle_info({gproc_ps_event, top_changed, #{info := #{block_type := key,
                                                       height     := Height}}},
             #state{child_top_height = OldHeight,
                    max_size = MaxSize} = State0) ->
-    State1 = State0#state{child_top_height = Height},
+    State1 = State0#state{child_top_height = Height,
+                          child_top_hash = Hash,
+                          posted_commitment = false},
     State2 =
         case OldHeight + MaxSize < Height of
             true -> State1#state{blocks = #{}}; %% we flush the whole state - this should not happen
@@ -215,7 +211,24 @@ handle_info({gproc_ps_event, top_changed, #{info := #{block_type := key,
         end,
     TargetHeight = target_parent_height(State2),
     aec_parent_connector:request_block_by_height(TargetHeight),
+    lager:warning("ASDF received top_changed for height ~p", [Height]),
     State = maybe_post_commitments(Hash, State2),
+    {noreply, State};
+handle_info({gproc_ps_event, chain_sync, #{info := {is_syncing, IsSyncing}}}, State0) ->
+    lager:info("ASDF IS SYNCING ~p ", [IsSyncing]),
+    State1 = State0#state{is_syncing = IsSyncing},
+    State = 
+        case IsSyncing =:= false andalso not State0#state.posted_commitment of
+            true ->
+                {ok, TopBlock} = aec_chain:top_key_block(),
+                {ok, TopHash} = aec_blocks:hash_internal_representation(TopBlock),
+                Height = aec_blocks:height(TopBlock),
+                lager:warning("ASDF received sync_done for height ~p", [Height]),
+                _State1 = maybe_post_commitments(TopHash, State1);
+            false ->
+                lager:info("Not posting commitment", []),
+                State1
+        end,
     {noreply, State};
 handle_info({gproc_ps_event, top_changed, _}, State) ->
     {noreply, State};
@@ -223,6 +236,8 @@ handle_info({gproc_ps_event, start_mining, _}, State) ->
     {noreply, State#state{producing_blocks = true}};
 handle_info({gproc_ps_event, stop_mining, _}, State) ->
     {noreply, State#state{producing_blocks = false}};
+handle_info({gproc_ps_event, chain_sync, _}, State) ->
+    {noreply, State};
 handle_info(_Info, State) ->
     lager:debug("Unhandled info: ~p", [_Info]),
     {noreply, State}.
@@ -283,13 +298,11 @@ delete_block(Height, #state{blocks = Blocks,
 
 state_to_map(#state{child_start_height = StartHeight,
                     child_top_height   = ChildHeight,
-                    pc_confirmations   = Confirmations,
                     max_size     = MaxSize,
                     blocks       = Blocks, 
                     top_height   = TopHeight}) ->
     #{  child_start_height => StartHeight,
         child_top_height   => ChildHeight,
-        pc_confirmations   => Confirmations,
         max_size     => MaxSize,
         blocks       => Blocks, 
         top_height   => TopHeight}.
@@ -385,13 +398,19 @@ maybe_request_next_block(BlockHeight, #state{max_size = MaxSize } = State) ->
             pass
     end.
 
-maybe_post_commitments(TopHash, #state{sign_module = SignModule} = State) ->
-    case posting_commitments_enabled(State) of
+maybe_post_commitments(TopHash, #state{is_syncing = IsSyncing,
+                                       posted_commitment = PostedCommitment} = State) ->
+    PostingCommitments = posting_commitments_enabled(State),
+    case PostingCommitments andalso not IsSyncing andalso not PostedCommitment of
         true ->
-            post_commitments(TopHash, #state{sign_module = SignModule} = State);
+            lager:warning("posting commitments", []),
+            post_commitments(TopHash, State#state{posted_commitment = true});
         false ->
-            lager:debug("Will not post commitments, disabled", []),
-            State
+            lager:warning("Will not post commitments, disabled, is Syncing ~p, is posting commitments ~p, already posted ~p",
+                          [IsSyncing, PostingCommitments, State#state.posted_commitment]),
+            lager:debug("Will not post commitments, disabled, is Syncing ~p, is posting commitments ~p, already posted ~p",
+                          [IsSyncing, PostingCommitments, State#state.posted_commitment]),
+            State#state{posted_commitment = false}
     end.
 
 
@@ -402,14 +421,17 @@ post_commitments(TopHash, #state{sign_module = SignModule} = State) ->
     %% aetx_env:tx_env_and_trees_from_top/1 could be dangerous
     {TxEnv, Trees} = aetx_env:tx_env_and_trees_from_hash(aetx_transaction, TopHash),
     {ok, AllStakers} = aec_consensus_hc:parent_chain_validators(TxEnv, Trees),
+    lager:info("ALL STAKERS ~p", [AllStakers]),
     LocalStakers =
         lists:filter(fun SignModule:is_key_present/1, AllStakers),
+    lager:info("Local stakers ~p", [LocalStakers]),
     Commitment = aeser_api_encoder:encode(key_block_hash, TopHash),
     lists:foreach(
         fun(Staker) ->
             case aec_parent_connector:post_commitment(Staker, Commitment) of
                 ok ->
-                    lager:debug("Posted commitment for staker ~p", [Staker]),
+                    lager:debug("Posted a commitment [height ~p] for staker ~p",
+                                [aetx_env:height(TxEnv), Staker]),
                     ok;
                 {error, _Err} ->
                     %% TODO: maybe repost?
@@ -427,20 +449,16 @@ post_commitments(TopHash, #state{sign_module = SignModule} = State) ->
 %% genesis block before the block with height 1: those are not posted as
 %% there is no trigger for the genesis block itself
 %% We detect once there is a block that would trigger one with height 1
-maybe_post_initial_commitments(Block, #state{pc_confirmations = Confirmations,
-                                             initial_commits_heights = InitialCommitsHeights} = State) ->
+maybe_post_initial_commitments(Block, State) ->
     Height = aec_parent_chain_block:height(Block),
     ChildStartHeight = State#state.child_start_height,
     %% we start one block before the parent chain height that would result in block 1 of the child chain
-    IsFirstCommitment = Height >= ChildStartHeight - 1 andalso
-                        Height < ChildStartHeight + Confirmations,
-    NotPostedYet = lists:member(Height, InitialCommitsHeights),
+    IsFirstCommitment = Height =:= ChildStartHeight,
     IsPublishingCommitments = posting_commitments_enabled(State),
-    case IsFirstCommitment andalso NotPostedYet andalso IsPublishingCommitments of
+    case IsFirstCommitment andalso IsPublishingCommitments of
         true ->
             Hash = aec_chain:genesis_hash(), %% TODO: maybe reconsider if we shall post Genesis hash before seeing any block on the parent chain or a different approach should be taken
-            State1 = maybe_post_commitments(Hash, State),
-            State1#state{initial_commits_heights = lists:delete(Height, InitialCommitsHeights)};
+            _State1 = maybe_post_commitments(Hash, State);
         false ->
             State
     end.

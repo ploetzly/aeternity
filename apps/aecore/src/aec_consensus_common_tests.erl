@@ -37,7 +37,7 @@
         , dirty_validate_micro_node_with_ctx/3
         %% State transition
         , state_pre_transform_key_node_consensus_switch/2
-        , state_pre_transform_key_node/2
+        , state_pre_transform_key_node/3
         , state_pre_transform_micro_node/2
         %% Block rewards
         , state_grant_reward/4
@@ -114,11 +114,11 @@ client_request({mine_blocks, NumBlocksToMine, Type}) ->
             {ok, [client_request(emit_mb) || _ <- lists:seq(1, NumBlocksToMine)]}
     end;
 client_request(mine_micro_block_emptying_mempool_or_fail) ->
-    KB = client_request(emit_kb),
+    MaybeKB = ensure_leader(),
     MB = client_request(emit_mb),
     %% If instant mining is enabled then we can't have microforks :)
     {ok, []} = aec_tx_pool:peek(infinity),
-    {ok, [KB, MB]};
+    {ok, MaybeKB ++ [MB]};
 client_request({mine_blocks_until_txs_on_chain, TxHashes, Max}) ->
     mine_blocks_until_txs_on_chain(TxHashes, Max, []).
 
@@ -166,7 +166,7 @@ dirty_validate_micro_node_with_ctx(_Node, _Block, _Ctx) -> ok.
 %% -------------------------------------------------------------------
 %% Custom state transitions
 state_pre_transform_key_node_consensus_switch(_Node, Trees) -> Trees.
-state_pre_transform_key_node(_Node, Trees) -> Trees.
+state_pre_transform_key_node(_Node, _PrevNode, Trees) -> Trees.
 state_pre_transform_micro_node(_Node, Trees) -> Trees.
 
 %% -------------------------------------------------------------------
@@ -243,5 +243,15 @@ get_block_producer_configs() -> aec_consensus_bitcoin_ng:get_block_producer_conf
 
 is_leader_valid(_Node, _Trees, _TxEnv, _PrevNode) ->
     true.
+
+ensure_leader() ->
+    case aec_conductor:is_leader() of
+        false ->
+            KB = client_request(emit_kb),
+            [KB];
+        true ->
+            []
+    end.
+
 
 -endif.

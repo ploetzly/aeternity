@@ -35,7 +35,7 @@
 -define(CHILD_START_HEIGHT, 10).
 -define(CHILD_CONFIRMATIONS, 0).
 -define(REWARD_DELAY, 2).
--define(LAZY_INTERVAL, 3000).
+-define(LAZY_INTERVAL, 60000).
 -define(NODE1, dev1).
 -define(NODE1_NAME, aecore_suite_utils:node_name(?NODE1)).
 
@@ -143,6 +143,8 @@ init_per_suite(Config0) ->
                          },
                     <<"fork_management">> =>
                         #{<<"network_id">> => ?PARENT_CHAIN_NETWORK_ID},
+                    %%<<"http">> => #{<<"external">> => #{<<"acceptors">> => 100}},
+                    <<"http">> => #{<<"cache">> => #{<<"enabled">> => false}},
                     <<"mining">> =>
                         #{<<"micro_block_cycle">> => 1,
                           <<"expected_mine_rate">> => 2000,
@@ -202,6 +204,7 @@ init_per_group_custom(NetworkId, ?CONSENSUS_POS, Config) ->
     aecore_suite_utils:connect(?NODE2_NAME, []),
     _Config1 = [{network_id, NetworkId}, {consensus, ?CONSENSUS_POS} | Config];
 init_per_group_custom(NetworkId, ?CONSENSUS_HC, Config) ->
+    GenesisStartTime = aeu_time:now_in_msecs(),
     ElectionContract = election_contract_by_consensus(?CONSENSUS_HC),
     build_json_files(NetworkId, ElectionContract, Config, [?NODE1, ?NODE2]),
     %% different runs use different network ids
@@ -214,24 +217,22 @@ init_per_group_custom(NetworkId, ?CONSENSUS_HC, Config) ->
                     parent, ?CHILD_START_HEIGHT, ?CONSENSUS_HC),
 
     aecore_suite_utils:create_config(?NODE1, Config,
-                                    node_config([?ALICE, ?BOB], ?CONSENSUS_HC),
+                                    node_config([?ALICE, ?BOB], ?CONSENSUS_HC,
+                                               true, GenesisStartTime),
                                     [{add_peers, true} ]),
     aecore_suite_utils:create_config(?NODE2, Config,
-                                    node_config([], ?CONSENSUS_HC),
+                                    node_config([], ?CONSENSUS_HC, true,
+                                                GenesisStartTime),
                                     [{add_peers, true} ]),
     aecore_suite_utils:start_node(?NODE1, Config, Env),
     aecore_suite_utils:connect(?NODE1_NAME, []),
     aecore_suite_utils:start_node(?NODE2, Config, Env),
     aecore_suite_utils:connect(?NODE2_NAME, []),
-
+    ParentTopHeight0 = rpc(?PARENT_CHAIN_NODE1, aec_chain, top_height, []),
+    ct:log("Parent chain top height ~p", [ParentTopHeight0]),
     timer:sleep(1000),
-    NumberOfCommitments = 2,
-    %% mine blocks on the parent chain and include commitments; stop right
-    %% before the child chain produces a block
-    ct:log("Mining last initial commitment on the parent chain", []),
-    wait_for_commitments_in_pool(?PARENT_CHAIN_NODE1, NumberOfCommitments),
-    {ok, _} = aecore_suite_utils:mine_micro_blocks(?PARENT_CHAIN_NODE1_NAME, 1),
-    Config1 = [{network_id, NetworkId}, {consensus, ?CONSENSUS_HC} | Config],
+    Config1 = [{network_id, NetworkId}, {consensus, ?CONSENSUS_HC},
+               {genesis_start_time, GenesisStartTime} | Config],
     {ok, _} = produce_blocks(?NODE1, ?NODE1_NAME, child, 10, ?config(consensus, Config1)),
     ParentTopHeight = rpc(?PARENT_CHAIN_NODE1, aec_chain, top_height, []),
     {ok, ParentBlocks} = get_generations(?PARENT_CHAIN_NODE1, 0, ParentTopHeight),
@@ -243,6 +244,8 @@ init_per_group_custom(NetworkId, ?CONSENSUS_HC, Config) ->
     Config1.
 
 set_up_lazy_leader_node(NetworkId, Config) ->
+    GenesisStartTime = ?config(genesis_start_time, Config),
+    false = GenesisStartTime =:= undefined,
     ElectionContract = election_contract_by_consensus(?CONSENSUS_HC),
     aecore_suite_utils:make_multi(Config, [?LAZY_NODE]),
     build_json_files(NetworkId, ElectionContract, Config, [?LAZY_NODE]),
@@ -250,7 +253,8 @@ set_up_lazy_leader_node(NetworkId, Config) ->
     Env = [ {"AE__FORK_MANAGEMENT__NETWORK_ID", binary_to_list(NetworkId)}
           ],
     aecore_suite_utils:create_config(?LAZY_NODE, Config,
-                                    node_config([?CAROL], ?CONSENSUS_HC, false),
+                                    node_config([?CAROL], ?CONSENSUS_HC,
+                                                false, GenesisStartTime),
                                     [{add_peers, true} ]),
     aecore_suite_utils:start_node(?LAZY_NODE, Config, Env),
     aecore_suite_utils:connect(?LAZY_NODE_NAME, []),
@@ -259,9 +263,7 @@ set_up_lazy_leader_node(NetworkId, Config) ->
     ct:log("Connected peers ~p", [LazyNodePeers]),
     LazyNodeVerifiedPeers = rpc(?LAZY_NODE, aec_peers, available_peers, [verified]),
     ct:log("Verified peers ~p", [LazyNodeVerifiedPeers]),
-%%    {ok, _} = wait_same_top(?NODE1, ?LAZY_NODE),
-%%
-wait_same_top(?NODE1, ?LAZY_NODE),
+    {ok, _} = wait_same_top(?NODE1, ?LAZY_NODE),
     Inspect =
         fun(Node) ->
             {ok, TopH} = aec_headers:hash_header(rpc(Node, aec_chain, top_header, [])),
@@ -378,7 +380,7 @@ wait_same_top() ->
     wait_same_top(?NODE1, ?NODE2).
 
 wait_same_top(Node1, Node2) ->
-    wait_same_top(Node1, Node2, 100).
+    wait_same_top(Node1, Node2, 200).
 
 wait_same_top(_Node1, _Node2, Attempts) when Attempts < 1 ->
     {error, run_out_of_attempts};
@@ -724,13 +726,24 @@ elected_leader_did_not_show_up(Config) ->
                                 TopHeader0},
     ct:log("Start header: ~p", [TopHeader0]),
     %% produce a block on the parent chain
-    produce_blocks(?PARENT_CHAIN_NODE1, ?PARENT_CHAIN_NODE1_NAME,
-                    parent, 1, ?CONSENSUS_HC),
-    timer:sleep(2 * ?LAZY_INTERVAL + 100),
-    %%{ok, [KB]} = produce_blocks(?LAZY_NODE, ?LAZY_NODE_NAME, child, 1, ?config(consensus, Config)),
+    ok = produce_blocks_hc(?LAZY_NODE, ?LAZY_NODE_NAME, 1, lazy_leader),
+    {ok, KB} = wait_same_top(?NODE2, ?LAZY_NODE),
+    0 = aec_blocks:difficulty(KB),
     TopHeader1 = rpc(?LAZY_NODE, aec_chain, top_header, []),
     ct:log("Lazy header: ~p", [TopHeader1]),
     TopHeader1 = rpc(?NODE2, aec_chain, top_header, []),
+    NetworkId = ?config(network_id, Config),
+    Env = [ {"AE__FORK_MANAGEMENT__NETWORK_ID", binary_to_list(NetworkId)}
+          ],
+    aecore_suite_utils:start_node(?NODE1, Config, Env),
+    aecore_suite_utils:connect(?NODE1_NAME, []),
+    {ok, _} = wait_same_top(?NODE1, ?LAZY_NODE),
+    ok = produce_blocks_hc(?NODE1, ?NODE1_NAME, 1, abnormal_commitments_cnt),
+    {ok, KB1} = wait_same_top(?NODE1, ?LAZY_NODE),
+    {ok, KB1} = wait_same_top(?NODE2, ?LAZY_NODE),
+    {ok, _} = produce_blocks(?NODE1, ?NODE1_NAME, child, 10, ?config(consensus, Config)),
+    {ok, KB2} = wait_same_top(?NODE1, ?LAZY_NODE),
+    {ok, KB2} = wait_same_top(?NODE2, ?LAZY_NODE),
     ok.
 
 
@@ -785,11 +798,6 @@ seed_account(RecpipientPubkey, Amount, NetworkId) ->
 seed_account(Node, NodeName, RecpipientPubkey, Amount, NetworkId) ->
     MineFun = fun(Tx) -> mine_tx_no_cheating(Node, Tx) end,
     seed_account(Node, NodeName, RecpipientPubkey, Amount, NetworkId, MineFun).
-
-%%seed_account_pow(Node, NodeName, RecpipientPubkey, Amount, NetworkId) ->
-%%    MineFun = fun(Tx) -> mine_tx(NodeName, Tx) end,
-%%    seed_account(Node, NodeName, RecpipientPubkey, Amount, NetworkId, MineFun).
-
 
 seed_account(Node, NodeName, RecpipientPubkey, Amount, NetworkId, MineFun) ->
     %% precondition
@@ -1095,9 +1103,9 @@ build_json_files(NetworkId, ElectionContract, Config, NodesList) ->
     ok.
 
 node_config(PotentialStakers, Consensus) ->
-    node_config(PotentialStakers, Consensus, true).
+    node_config(PotentialStakers, Consensus, true, 0).
 
-node_config(PotentialStakers, Consensus, ProducingCommitments) ->
+node_config(PotentialStakers, Consensus, ProducingCommitments, GenesisStartTime) ->
     Stakers =
         case Consensus of
             ?CONSENSUS_POS ->
@@ -1147,6 +1155,7 @@ node_config(PotentialStakers, Consensus, ProducingCommitments) ->
                             },
                         <<"producing_commitments">> => ProducingCommitments
                         },
+                    <<"genesis_start_time">> => GenesisStartTime,
                     <<"time_till_declaring_lazy_leader">> => ?LAZY_INTERVAL
                         
                  }
@@ -1168,6 +1177,7 @@ node_config(PotentialStakers, Consensus, ProducingCommitments) ->
                                     }}},
         <<"fork_management">> =>
             #{<<"network_id">> => <<"this_will_be_overwritten_runtime">>},
+        <<"logging">> => #{<<"level">> => <<"debug">>},
         <<"mining">> =>
             #{<<"micro_block_cycle">> => 1,
             <<"autostart">> => true,
@@ -1195,7 +1205,7 @@ produce_blocks(Node, NodeName, child = _NodeType, BlocksCnt, ?CONSENSUS_POS) ->
     get_generations(Node, TopHeight + 1, TopHeight + BlocksCnt);
 produce_blocks(Node, NodeName, child = _NodeType, BlocksCnt, ?CONSENSUS_HC) ->
     TopHeight0 = rpc(Node, aec_chain, top_height, []),
-    produce_blocks_hc(Node, NodeName, BlocksCnt),
+    produce_blocks_hc(Node, NodeName, BlocksCnt, correct_leader),
     TopHeight = rpc(Node, aec_chain, top_height, []),
     get_generations(Node, TopHeight0 + 1, TopHeight).
 
@@ -1215,46 +1225,120 @@ get_generations(Node, FromHeight, ToHeight) ->
     {ok, lists:reverse(ReversedBlocks)}.
 
 
-produce_blocks_hc(_Node, _NodeName, BlocksCnt) when BlocksCnt < 1 ->
+produce_blocks_hc(_Node, _NodeName, BlocksCnt, _LeaderType) when BlocksCnt < 1 ->
     ok;
-produce_blocks_hc(Node, NodeName, BlocksCnt) ->
+produce_blocks_hc(Node, NodeName, BlocksCnt, LeaderType) ->
     ParentNode = ?PARENT_CHAIN_NODE1,
     ParentNodeName = ?PARENT_CHAIN_NODE1_NAME,
     %% make sure the parent chain is not mining
     stopped = rpc:call(ParentNodeName, aec_conductor, get_mining_state, []),
     %% initial child chain state
     TopHeight = rpc(Node, aec_chain, top_height, []),
+    ct:log("Producing a block with height ~p", [TopHeight + 1]),
     %% mine a single block on the parent chain
-    {ok, _} = aecore_suite_utils:mine_key_blocks(ParentNodeName, 1),
-    ok = aecore_suite_utils:wait_for_height(NodeName, TopHeight + 1, 5000), %% 5s per block
-    wait_for_commitments_in_pool(ParentNode, 2),
-    {ok, _} = aecore_suite_utils:mine_micro_blocks(ParentNodeName, 1),
+    case LeaderType of
+        lazy_leader ->
+            {ok, _} = aecore_suite_utils:mine_micro_block_emptying_mempool_or_fail(ParentNodeName),
+            {ok, [KB]} = aecore_suite_utils:mine_key_blocks(ParentNodeName, 1),
+            ct:log("Patent block mined ~p", [KB]),
+            ok = aecore_suite_utils:wait_for_height(NodeName, TopHeight + 1, ?LAZY_INTERVAL + 5000),
+            CTop = rpc(Node, aec_chain, top_block, []),
+            true = is_keyblock_lazy(CTop),
+            ok;
+        abnormal_commitments_cnt ->
+            {ok, _} = wait_for_at_least_commitments_in_pool(ParentNode, Node, 2),
+            {ok, _} = aecore_suite_utils:mine_micro_block_emptying_mempool_or_fail(ParentNodeName),
+            {ok, [KB]} = aecore_suite_utils:mine_key_blocks(ParentNodeName, 1),
+            ct:log("Patent block mined ~p", [KB]),
+            ok = aecore_suite_utils:wait_for_height(NodeName, TopHeight + 1, 10000), %% 10s per block
+            CTop = rpc(Node, aec_chain, top_block, []),
+            false = is_keyblock_lazy(CTop),
+            ok;
+        allow_additional_txs ->
+            {ok, _} = wait_for_at_least_commitments_in_pool(ParentNode, Node, 2),
+            {ok, _} = aecore_suite_utils:mine_micro_block_emptying_mempool_or_fail(ParentNodeName),
+            {ok, [KB]} = aecore_suite_utils:mine_key_blocks(ParentNodeName, 1),
+            ct:log("Patent block mined ~p", [KB]),
+            ok = aecore_suite_utils:wait_for_height(NodeName, TopHeight + 1, 10000), %% 10s per block
+            CTop = rpc(Node, aec_chain, top_block, []),
+            false = is_keyblock_lazy(CTop),
+            ok;
+        correct_leader ->
+            {ok, _} = wait_for_commitments_in_pool(ParentNode, Node, 2),
+            {ok, _} = aecore_suite_utils:mine_micro_block_emptying_mempool_or_fail(ParentNodeName),
+            {ok, [KB]} = aecore_suite_utils:mine_key_blocks(ParentNodeName, 1),
+            ct:log("Patent block mined ~p", [KB]),
+            ok = aecore_suite_utils:wait_for_height(NodeName, TopHeight + 1, 10000), %% 10s per block
+            CTop = rpc(Node, aec_chain, top_block, []),
+            false = is_keyblock_lazy(CTop),
+            ok
+    end,
     %% wait for the child to catch up
-    produce_blocks_hc(Node, NodeName, BlocksCnt - 1).
+    produce_blocks_hc(Node, NodeName, BlocksCnt - 1, LeaderType).
 
 
 
-wait_for_commitments_in_pool(Node, Cnt) ->
-    wait_for_commitments_in_pool(Node, Cnt, 100).
+wait_for_commitments_in_pool(Node,CNode, Cnt) ->
+    wait_for_commitments_in_pool(Node, CNode, Cnt, 100).
 
-wait_for_commitments_in_pool(Node, Cnt, Attempts) when Attempts < 1 ->
+wait_for_commitments_in_pool(Node, CNode, Cnt, Attempts) ->
+    wait_for_commitments_in_pool_(Node, CNode, fun(Pool) ->
+                                                    TxsCnt = length(Pool),
+                                                    TxsCnt =:= Cnt
+                                               end, Attempts).
+
+wait_for_at_least_commitments_in_pool(Node, CNode, Cnt) ->
+    wait_for_commitments_in_pool_(Node, CNode, fun(Pool) -> 
+                                                    TxsCnt = length(Pool),
+                                                    TxsCnt >= Cnt
+                                               end, 100).
+
+wait_for_commitments_in_pool_(Node, ChildNode, CompareFun, Attempts) when Attempts < 1 ->
     {ok, Pool} = rpc(Node, aec_tx_pool, peek, [infinity]),
     TxsCnt = length(Pool),
-    error({run_out_of_attempts, Cnt, TxsCnt});
-wait_for_commitments_in_pool(Node, Cnt, Attempts) ->
-    TopHeader = rpc(?NODE1, aec_chain, top_header, []),
+    case CompareFun(TxsCnt) of
+        true ->
+            validate_expected_commitments(ChildNode, Pool),
+            {ok, Pool};
+        false ->
+            error({run_out_of_attempts, TxsCnt})
+    end;
+wait_for_commitments_in_pool_(Node, ChildNode, CompareFun, Attempts) ->
+    TopHeader = rpc(Node, aec_chain, top_header, []),
     {ok, TopHash} = aec_headers:hash_header(TopHeader),
     TopHeight = aec_headers:height(TopHeader),
+    ChildTopHeader = rpc(ChildNode, aec_chain, top_header, []),
+    {ok, CTopHash} = aec_headers:hash_header(ChildTopHeader),
+    CTopHeight = aec_headers:height(ChildTopHeader),
     {ok, Pool} = rpc(Node, aec_tx_pool, peek, [infinity]),
-    TxsCnt = length(Pool),
-    ct:log("Height ~p, hash ~p, commitments in pool ~p",
-           [TopHeight, aeser_api_encoder:encode(key_block_hash, TopHash), Pool]),
-    case TxsCnt =:= Cnt of
-        true -> ok;
-        false when TxsCnt > Cnt -> error(more_tx_in_pool);
+    ct:log("Parent Height ~p, hash ~p, ~p commitments in pool ~p",
+           [TopHeight, aeser_api_encoder:encode(key_block_hash, TopHash),
+            length(Pool), Pool]),
+    ct:log("Child Height ~p, hash ~p",
+           [CTopHeight, aeser_api_encoder:encode(key_block_hash, CTopHash)]),
+    case CompareFun(Pool) of
+        true ->
+            validate_expected_commitments(ChildNode, Pool),
+            {ok, Pool};
         false ->
             timer:sleep(30),
-            wait_for_commitments_in_pool(Node, Cnt, Attempts - 1)
+            wait_for_commitments_in_pool_(Node, ChildNode, CompareFun, Attempts - 1)
+    end.
+
+validate_expected_commitments(Node, Commitments) ->
+    {ok, TopH} = aec_headers:hash_header(rpc(Node, aec_chain, top_header, [])),
+    ExpectedCommitment = aeser_api_encoder:encode(key_block_hash, TopH),
+    GenesisEncoded = aeser_api_encoder:encode(key_block_hash, rpc(Node, aec_chain, genesis_hash, [])),
+    ct:log("Child chain top hash ~p", [ExpectedCommitment]),
+    case lists:all(fun(SignedTx) ->
+                        {spend_tx, SpendTx} = aetx:specialize_type(aetx_sign:tx(SignedTx)),
+                        ct:log("Spend payload ~p", [aec_spend_tx:payload(SpendTx)]),
+                        aec_spend_tx:payload(SpendTx) =:= ExpectedCommitment
+                        orelse aec_spend_tx:payload(SpendTx) =:= GenesisEncoded
+                    end,
+                   Commitments) of
+        true -> ok;
+        false -> error(commitments_mismatch)
     end.
 
 get_commitments(From, To) ->
@@ -1266,4 +1350,9 @@ get_commitments(From, To) ->
             fun(MB) -> {aec_blocks:height(MB), aec_blocks:txs(MB)} end,
             MicroBlocks)).
 
+
+
+is_keyblock_lazy(KB) ->
+    ct:log("Inspecting block ~p", [KB]),
+    0 =:= aec_blocks:difficulty(KB).
 

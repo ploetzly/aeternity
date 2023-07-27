@@ -726,6 +726,21 @@ wait_for_tx_in_pool(Node, SignedTx, Timeout) ->
 	    ok = unsubscribe(Node, tx_received)
     end.
 
+wait_for_tx_included_in_chain(Node, SignedTx) ->
+    wait_for_tx_included_in_chain(Node, SignedTx, 100).
+
+wait_for_tx_included_in_chain(_Node, SignedTx, Attempts) when Attempts < 1 ->
+    error({run_out_of_attempts, SignedTx});
+wait_for_tx_included_in_chain(Node, SignedTx, Attempts) ->
+    Hash = aetx_sign:hash(SignedTx),
+    case rpc:call(Node, aec_chain, find_tx_location, [Hash]) of
+        B when is_binary(B) -> ok;
+        none -> error({already_gc, SignedTx});
+        _ ->
+            timer:sleep(10),
+            wait_for_tx_included_in_chain(Node, SignedTx, Attempts - 1)
+    end.
+
 mine_blocks_until_txs_on_chain(Node, TxHashes, MaxBlocks) ->
     mine_blocks_until_txs_on_chain(Node, TxHashes, ?DEFAULT_CUSTOM_EXPECTED_MINE_RATE, MaxBlocks).
 
@@ -910,12 +925,19 @@ wait_for_height_(Node, Height, TimeoutPerBlock) ->
             undefined -> 0;
             Header -> aec_headers:height(Header)
         end,
+    ct:log("ASDF DELETE ME PLEASE: TopHeight ~p, ExpectedHeight ~p", [TopHeight, Height]),
     case TopHeight >= Height of
         true -> % reached height
             ok;
         false ->
             case wait_for_new_block(TimeoutPerBlock) of
                 {error, timeout_waiting_for_block} ->
+                    CurrentH =
+                        case rpc:call(Node, aec_chain, top_header, []) of
+                            undefined -> undefined;
+                            H -> aec_headers:height(H)
+                        end,
+                    ct:log("ASDF DELETE ME PLEASE: current height is ~p", [CurrentH]),
                     {error, timeout_waiting_for_block, {top, TopHeight}, {waiting_for, Height}};
                 ok ->
                     wait_for_height_(Node, Height, TimeoutPerBlock)

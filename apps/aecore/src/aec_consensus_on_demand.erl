@@ -36,7 +36,7 @@
         , dirty_validate_micro_node_with_ctx/3
         %% State transition
         , state_pre_transform_key_node_consensus_switch/2
-        , state_pre_transform_key_node/2
+        , state_pre_transform_key_node/3
         , state_pre_transform_micro_node/2
         %% Block rewards
         , state_grant_reward/4
@@ -115,10 +115,18 @@ client_request({mine_blocks, NumBlocksToMine, Type}) ->
     end;
 client_request(mine_micro_block_emptying_mempool_or_fail) ->
     Pre = ensure_leader(),
-    MB = client_request(emit_mb),
-    %% If instant mining is enabled then we can't have microforks :)
-    {ok, []} = aec_tx_pool:peek(infinity),
-    {ok, Pre ++ [MB]};
+    Emit = fun F(_Accum, Attempts) when Attempts < 1 -> error(could_not_mine_tx);
+               F(Accum, Attempts) ->
+                    MB = client_request(emit_mb),
+                    %% If instant mining is enabled then we can't have microforks :)
+                    Accum1 = Accum ++ [MB],
+                    case aec_tx_pool:peek(infinity) of
+                        {ok, []} -> {ok, Accum1};
+                        {ok, [_Tx | _]} -> F(Accum1, Attempts -1)
+                    end
+                end,
+    {ok, MBs} = Emit([], 10),
+    {ok, Pre ++ MBs};
 client_request({mine_blocks_until_txs_on_chain, TxHashes, Max}) ->
     mine_blocks_until_txs_on_chain(TxHashes, Max, []).
 
@@ -177,7 +185,7 @@ dirty_validate_micro_node_with_ctx(_Node, _Block, _Ctx) -> ok.
 %% -------------------------------------------------------------------
 %% Custom state transitions
 state_pre_transform_key_node_consensus_switch(_Node, Trees) -> Trees.
-state_pre_transform_key_node(_Node, Trees) -> Trees.
+state_pre_transform_key_node(_Node, _PrevNode, Trees) -> Trees.
 state_pre_transform_micro_node(_Node, Trees) -> Trees.
 
 %% -------------------------------------------------------------------

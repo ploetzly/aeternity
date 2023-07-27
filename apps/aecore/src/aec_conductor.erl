@@ -541,7 +541,9 @@ get_next_beneficiary(Consensus) ->
 get_next_beneficiary(Consensus, TopHeader) ->
     case Consensus:next_beneficiary() of
         {ok, _L} = OK -> OK;
-        {error, not_in_cache} = Err -> Err;
+        {error, not_in_cache} = Err ->
+            %%timer:sleep(1000), %% TODO: make this configurable
+            Err;
         {error, not_leader} = NotLeader ->
             case Consensus:allow_lazy_leader() of
                 {true, LazyLeaderTimeDelta} ->
