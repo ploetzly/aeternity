@@ -224,7 +224,7 @@ state_pre_transform_key_node(Node, PrevNode, Trees) ->
                     aec_conductor:throw_error(parent_chain_block_not_synced);
                 {ok, Block} ->
                     Entropy = aec_parent_chain_block:hash(Block),
-                    CommitmentsSophia = encode_commtiments(Block),
+                    CommitmentsSophia = encode_commitments(Block),
                     {ok, Commitments} = aec_parent_chain_block:commitments(Block),
                     epoch_sync:info("ASDF AGH Parent chain block height ~p, has the following commitments ~p", 
                                     [PCHeight, Commitments]),
@@ -386,7 +386,7 @@ set_key_block_seal(KeyBlock, Seal) ->
 
 call_elect_next_or_lazy_leader(PCBlock, TxEnv, Trees) ->
     Entropy = aec_parent_chain_block:hash(PCBlock),
-    CommitmentsSophia = encode_commtiments(PCBlock),
+    CommitmentsSophia = encode_commitments(PCBlock),
     {ok, CD} = aeb_fate_abi:create_calldata("elect_next",
                                             [aefa_fate_code:encode_arg({string, Entropy}),
                                              CommitmentsSophia
@@ -613,7 +613,7 @@ next_beneficiary() ->
             epoch_sync:info("ASDF AGH elect_next for height ~p, Parent chain block height ~p, has the following commitments ~p", 
                             [NextHeight, PCHeight, Commitments]),
             Entropy = aec_parent_chain_block:hash(Block),
-            CommitmentsSophia = encode_commtiments(Block),
+            CommitmentsSophia = encode_commitments(Block),
             {ok, CD} = aeb_fate_abi:create_calldata("elect_next",
                                                     [aefa_fate_code:encode_arg({string, Entropy}),
                                                      CommitmentsSophia
@@ -621,9 +621,9 @@ next_beneficiary() ->
             CallData = aeser_api_encoder:encode(contract_bytearray, CD),
             try call_consensus_contract_(?ELECTION_CONTRACT, TxEnv, Trees, CallData, "elect_next", 0) of
                 {ok, _Trees1, Call} ->
-                    {tuple, {{address, Leader}, _Stake}}  = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
-                    epoch_sync:info("ASDF AGH elect_next for height ~p chose leader ~p", 
-                                    [NextHeight, aeser_api_encoder:encode(account_pubkey, Leader)]),
+                    {tuple, {{address, Leader}, Stake}}  = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
+                    epoch_sync:info("ASDF AGH elect_next for height ~p chose leader ~p, stake ~p", 
+                                    [NextHeight, aeser_api_encoder:encode(account_pubkey, Leader), Stake]),
                     SignModule = get_sign_module(),
                     case SignModule:set_candidate(Leader) of
                         {error, key_not_found} ->
@@ -820,7 +820,7 @@ seal_padding_size() ->
 pc_height(ChildHeight) ->
     ChildHeight + pc_start_height().%% child starts pinning from height 1, not genesis
 
-encode_commtiments(Block) ->
+encode_commitments(Block) ->
     {ok, Commitments} = aec_parent_chain_block:commitments(Block),
     Commitments1 =
         lists:foldl(
@@ -832,6 +832,7 @@ encode_commtiments(Block) ->
             end,
             #{},
             Commitments),
+    epoch_sync:info("ASDF AGH Commitments ~p", [Commitments1]),
     aeb_fate_data:make_map(Commitments1).
 
 elect_lazy_leader(Beneficiary, TxEnv, Trees) ->

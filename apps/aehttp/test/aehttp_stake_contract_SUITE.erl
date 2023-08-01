@@ -88,6 +88,7 @@
       93,11,3,93,177,65,197,27,123,127,177,165,190,211,20,112,79,108,
       85,78,88,181,26,207,191,211,40,225,138,154>>,
     "Carol"}).
+%% ak_2XNq9oKtThxKLNFGWTaxmLBZPgP7ECEGxL3zK7dTSFh6RyRvaG
 
 -define(GENESIS_BENFICIARY, <<0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0>>).
 
@@ -605,7 +606,7 @@ verify_fees(Config) ->
         fun(_) -> Test() end,
         lists:seq(1, 10)),
     {ok, _SignedTx} = seed_account(pubkey(?ALICE), 1, NetworkId),
-    produce_blocks(?NODE1, ?NODE1_NAME, child, ?REWARD_DELAY - 1, ?config(consensus, Config)),
+    produce_blocks(?NODE1, ?NODE1_NAME, child, ?REWARD_DELAY - 1, ?config(consensus, Config), allow_additional_txs),
     ct:log("Test with no transaction", []),
     Test(), %% before fees
     ct:log("Test with a spend transaction", []),
@@ -1196,16 +1197,19 @@ election_contract_address() ->
 election_contract_by_consensus(?CONSENSUS_HC) -> ?HC_ELECTION_CONTRACT;
 election_contract_by_consensus(?CONSENSUS_POS) -> ?POS_ELECTION_CONTRACT.
 
-produce_blocks(_Node, NodeName, parent = _NodeType, BlocksCnt, _Consensus) ->
+produce_blocks(Node, NodeName, NodeType, BlocksCnt, Consensus) ->
+    produce_blocks(Node, NodeName, NodeType, BlocksCnt, Consensus, correct_leader).
+
+produce_blocks(_Node, NodeName, parent = _NodeType, BlocksCnt, _Consensus, _HCType) ->
     {ok, _} = aecore_suite_utils:mine_key_blocks(NodeName, BlocksCnt);
-produce_blocks(Node, NodeName, child = _NodeType, BlocksCnt, ?CONSENSUS_POS) ->
+produce_blocks(Node, NodeName, child = _NodeType, BlocksCnt, ?CONSENSUS_POS, _HCType) ->
     TopHeight = rpc(Node, aec_chain, top_height, []),
     ok = aecore_suite_utils:wait_for_height(NodeName, TopHeight + BlocksCnt,
                                             5000 * BlocksCnt), %% 5s per block
     get_generations(Node, TopHeight + 1, TopHeight + BlocksCnt);
-produce_blocks(Node, NodeName, child = _NodeType, BlocksCnt, ?CONSENSUS_HC) ->
+produce_blocks(Node, NodeName, child = _NodeType, BlocksCnt, ?CONSENSUS_HC, HCType) ->
     TopHeight0 = rpc(Node, aec_chain, top_height, []),
-    produce_blocks_hc(Node, NodeName, BlocksCnt, correct_leader),
+    produce_blocks_hc(Node, NodeName, BlocksCnt, HCType),
     TopHeight = rpc(Node, aec_chain, top_height, []),
     get_generations(Node, TopHeight0 + 1, TopHeight).
 
@@ -1255,7 +1259,7 @@ produce_blocks_hc(Node, NodeName, BlocksCnt, LeaderType) ->
             false = is_keyblock_lazy(CTop),
             ok;
         allow_additional_txs ->
-            {ok, _} = wait_for_at_least_commitments_in_pool(ParentNode, Node, 2),
+            {ok, _} = wait_for_commitments_in_pool_but_allow_other_txs(ParentNode, Node, 2),
             {ok, _} = aecore_suite_utils:mine_micro_block_emptying_mempool_or_fail(ParentNodeName),
             {ok, [KB]} = aecore_suite_utils:mine_key_blocks(ParentNodeName, 1),
             ct:log("Patent block mined ~p", [KB]),
@@ -1278,30 +1282,52 @@ produce_blocks_hc(Node, NodeName, BlocksCnt, LeaderType) ->
 
 
 
-wait_for_commitments_in_pool(Node,CNode, Cnt) ->
-    wait_for_commitments_in_pool(Node, CNode, Cnt, 100).
-
-wait_for_commitments_in_pool(Node, CNode, Cnt, Attempts) ->
+wait_for_commitments_in_pool(Node, CNode, Cnt) ->
     wait_for_commitments_in_pool_(Node, CNode, fun(Pool) ->
                                                     TxsCnt = length(Pool),
-                                                    TxsCnt =:= Cnt
-                                               end, Attempts).
+                                                    Res = TxsCnt =:= Cnt,
+                                                    case Res of
+                                                        true ->
+                                                            validate_expected_commitments(CNode, Pool);
+                                                        false ->
+                                                            pass
+                                                    end,
+                                                    Res
+                                               end).
 
 wait_for_at_least_commitments_in_pool(Node, CNode, Cnt) ->
     wait_for_commitments_in_pool_(Node, CNode, fun(Pool) -> 
                                                     TxsCnt = length(Pool),
                                                     TxsCnt >= Cnt
-                                               end, 100).
+                                               end).
 
-wait_for_commitments_in_pool_(Node, ChildNode, CompareFun, Attempts) when Attempts < 1 ->
+wait_for_commitments_in_pool_but_allow_other_txs(Node, CNode, Cnt) ->
+    wait_for_commitments_in_pool_(Node, CNode,
+        fun(Pool) -> 
+            {ok, TopH} = aec_headers:hash_header(rpc(Node, aec_chain, top_header, [])),
+            ExpectedCommitment = aeser_api_encoder:encode(key_block_hash, TopH),
+            TxsCnt =
+                length(
+                    lists:filter(
+                        fun(SignedTx) ->
+                            {spend_tx, SpendTx} = aetx:specialize_type(aetx_sign:tx(SignedTx)),
+                            ct:log("Spend payload ~p", [aec_spend_tx:payload(SpendTx)]),
+                            aec_spend_tx:payload(SpendTx) =:= ExpectedCommitment
+                        end,
+                        Pool)),
+            TxsCnt =:= Cnt
+        end).
+
+wait_for_commitments_in_pool_(Node, ChildNode, CompareFun) ->
+    wait_for_commitments_in_pool_(Node, ChildNode, CompareFun, 100).
+
+wait_for_commitments_in_pool_(Node, _ChildNode, CompareFun, Attempts) when Attempts < 1 ->
     {ok, Pool} = rpc(Node, aec_tx_pool, peek, [infinity]),
-    TxsCnt = length(Pool),
-    case CompareFun(TxsCnt) of
+    case CompareFun(Pool) of
         true ->
-            validate_expected_commitments(ChildNode, Pool),
             {ok, Pool};
         false ->
-            error({run_out_of_attempts, TxsCnt})
+            error({run_out_of_attempts, length(Pool)})
     end;
 wait_for_commitments_in_pool_(Node, ChildNode, CompareFun, Attempts) ->
     TopHeader = rpc(Node, aec_chain, top_header, []),
@@ -1318,7 +1344,6 @@ wait_for_commitments_in_pool_(Node, ChildNode, CompareFun, Attempts) ->
            [CTopHeight, aeser_api_encoder:encode(key_block_hash, CTopHash)]),
     case CompareFun(Pool) of
         true ->
-            validate_expected_commitments(ChildNode, Pool),
             {ok, Pool};
         false ->
             timer:sleep(30),
