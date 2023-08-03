@@ -628,7 +628,7 @@ verify_commitments(Config) ->
             {true, TopHeight0, TopHeight} = {TopHeight0 =:= TopHeight - GenerationsCnt, TopHeight0, TopHeight},
             ParentTopHeight = rpc(?PARENT_CHAIN_NODE1, aec_chain, top_height, []),
             ct:log("End height: ~p, parent height ~p", [TopHeight, ParentTopHeight]),
-            {ok, Blocks} = get_generations(?PARENT_CHAIN_NODE1, ParentTopHeight0 + 1, ParentTopHeight),
+            {ok, Blocks} = get_generations(?PARENT_CHAIN_NODE1, ParentTopHeight0, ParentTopHeight),
             MicroBlocks =
                 lists:filter(
                 fun(B) -> aec_blocks:type(B) =:= micro end,
@@ -676,8 +676,8 @@ verify_commitments(Config) ->
                     ct:log("Commitments: ~p", [ParsedComms]),
                     lists:map(
                         fun({ParentHeight, N, H}) ->
-                            {N, N} = {N, H + ?CHILD_CONFIRMATIONS}, 
-                            ExpectedParentHeight = H + ?CHILD_START_HEIGHT + ?CHILD_CONFIRMATIONS - 1,
+                            {N, N} = {N, H + 1}, 
+                            ExpectedParentHeight = H + ?CHILD_START_HEIGHT,
                             {ParentHeight, ParentHeight} = {ParentHeight, ExpectedParentHeight}
                         end,
                         ParsedComms)
