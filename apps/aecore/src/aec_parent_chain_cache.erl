@@ -211,7 +211,8 @@ handle_info({gproc_ps_event, top_changed, #{info := #{block_type := key,
         end,
     TargetHeight = target_parent_height(State2),
     aec_parent_connector:request_block_by_height(TargetHeight),
-    lager:warning("ASDF received top_changed for height ~p", [Height]),
+    EncHash = aeser_api_encoder:encode(key_block_hash, Hash),
+    lager:warning("ASDF received top_changed for height ~p, hash ~p", [Height, EncHash]),
     State = maybe_post_commitments(Hash, State2),
     {noreply, State};
 handle_info({gproc_ps_event, chain_sync, #{info := {is_syncing, IsSyncing}}}, State0) ->
@@ -403,7 +404,7 @@ maybe_post_commitments(TopHash, #state{is_syncing = IsSyncing,
     PostingCommitments = posting_commitments_enabled(State),
     case PostingCommitments andalso not IsSyncing andalso not PostedCommitment of
         true ->
-            lager:warning("posting commitments", []),
+            lager:debug("posting commitments", []),
             post_commitments(TopHash, State#state{posted_commitment = true});
         false ->
             lager:warning("Will not post commitments, disabled, is Syncing ~p, is posting commitments ~p, already posted ~p",

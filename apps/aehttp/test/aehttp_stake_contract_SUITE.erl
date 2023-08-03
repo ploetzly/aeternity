@@ -1327,9 +1327,9 @@ wait_for_commitments_in_pool_(Node, ChildNode, CompareFun, Attempts) ->
     TopHeader = rpc(Node, aec_chain, top_header, []),
     {ok, TopHash} = aec_headers:hash_header(TopHeader),
     TopHeight = aec_headers:height(TopHeader),
-    ChildTopHeader = rpc(ChildNode, aec_chain, top_header, []),
-    {ok, CTopHash} = aec_headers:hash_header(ChildTopHeader),
-    CTopHeight = aec_headers:height(ChildTopHeader),
+    {ok, ChildTopBlock} = rpc(ChildNode, aec_chain, top_key_block, []),
+    {ok, CTopHash} = aec_blocks:hash_internal_representation(ChildTopBlock),
+    CTopHeight = aec_blocks:height(ChildTopBlock),
     {ok, Pool} = rpc(Node, aec_tx_pool, peek, [infinity]),
     ct:log("Parent Height ~p, hash ~p, ~p commitments in pool ~p",
            [TopHeight, aeser_api_encoder:encode(key_block_hash, TopHash),
@@ -1345,7 +1345,7 @@ wait_for_commitments_in_pool_(Node, ChildNode, CompareFun, Attempts) ->
     end.
 
 validate_expected_commitments(Node, Commitments) ->
-    {ok, TopH} = aec_headers:hash_header(rpc(Node, aec_chain, top_header, [])),
+    TopH = rpc(Node, aec_chain, top_key_block_hash, []),
     ExpectedCommitment = aeser_api_encoder:encode(key_block_hash, TopH),
     GenesisEncoded = aeser_api_encoder:encode(key_block_hash, rpc(Node, aec_chain, genesis_hash, [])),
     ct:log("Child chain top hash ~p", [ExpectedCommitment]),
