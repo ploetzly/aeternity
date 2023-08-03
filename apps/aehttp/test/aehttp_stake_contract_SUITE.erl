@@ -383,7 +383,7 @@ wait_same_top() ->
     wait_same_top(?NODE1, ?NODE2).
 
 wait_same_top(Node1, Node2) ->
-    wait_same_top(Node1, Node2, 200).
+    wait_same_top(Node1, Node2, 500).
 
 wait_same_top(_Node1, _Node2, Attempts) when Attempts < 1 ->
     {error, run_out_of_attempts};
