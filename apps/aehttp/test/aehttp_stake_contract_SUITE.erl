@@ -203,7 +203,9 @@ init_per_group_custom(NetworkId, ?CONSENSUS_POS, Config) ->
     aecore_suite_utils:connect(?NODE1_NAME, []),
     aecore_suite_utils:start_node(?NODE2, Config, Env),
     aecore_suite_utils:connect(?NODE2_NAME, []),
-    _Config1 = [{network_id, NetworkId}, {consensus, ?CONSENSUS_POS} | Config];
+    Config1 = [{network_id, NetworkId}, {consensus, ?CONSENSUS_POS} | Config],
+    {ok, _} = produce_blocks(?NODE1, ?NODE1_NAME, child, 10, ?config(consensus, Config1)),
+    Config1;
 init_per_group_custom(NetworkId, ?CONSENSUS_HC, Config) ->
     GenesisStartTime = aeu_time:now_in_msecs(),
     ElectionContract = election_contract_by_consensus(?CONSENSUS_HC),
@@ -507,7 +509,7 @@ change_leaders(Config) ->
 
 verify_fees(Config) ->
     %% start without any tx fees, only a keyblock
-    produce_blocks(?NODE1, ?NODE1_NAME, child, ?REWARD_DELAY + 1, ?config(consensus, Config)),
+    %produce_blocks(?NODE1, ?NODE1_NAME, child, ?REWARD_DELAY + 1, ?config(consensus, Config)),
     Test =
         fun() ->
             %% gather staking_powers before reward distribution
@@ -605,13 +607,13 @@ verify_fees(Config) ->
     lists:foreach(
         fun(_) -> Test() end,
         lists:seq(1, 10)),
-    {ok, _SignedTx} = seed_account(pubkey(?ALICE), 1, NetworkId),
-    produce_blocks(?NODE1, ?NODE1_NAME, child, ?REWARD_DELAY - 1, ?config(consensus, Config), allow_additional_txs),
-    ct:log("Test with no transaction", []),
-    Test(), %% before fees
+    %%produce_blocks(?NODE1, ?NODE1_NAME, child, ?REWARD_DELAY - 1, ?config(consensus, Config)),
     ct:log("Test with a spend transaction", []),
     Test(), %% fees
+    produce_blocks(?NODE1, ?NODE1_NAME, child, 1, ?config(consensus, Config)),
     ct:log("Test with no transaction", []),
+    {ok, _SignedTx} = seed_account(pubkey(?ALICE), 1, NetworkId),
+    produce_blocks(?NODE1, ?NODE1_NAME, child, 1, ?config(consensus, Config)),
     Test(), %% after fees
     ok.
 
@@ -1258,15 +1260,6 @@ produce_blocks_hc(Node, NodeName, BlocksCnt, LeaderType) ->
             CTop = rpc(Node, aec_chain, top_block, []),
             false = is_keyblock_lazy(CTop),
             ok;
-        allow_additional_txs ->
-            {ok, _} = wait_for_commitments_in_pool_but_allow_other_txs(ParentNode, Node, 2),
-            {ok, _} = aecore_suite_utils:mine_micro_block_emptying_mempool_or_fail(ParentNodeName),
-            {ok, [KB]} = aecore_suite_utils:mine_key_blocks(ParentNodeName, 1),
-            ct:log("Patent block mined ~p", [KB]),
-            ok = aecore_suite_utils:wait_for_height(NodeName, TopHeight + 1, 10000), %% 10s per block
-            CTop = rpc(Node, aec_chain, top_block, []),
-            false = is_keyblock_lazy(CTop),
-            ok;
         correct_leader ->
             {ok, _} = wait_for_commitments_in_pool(ParentNode, Node, 2),
             {ok, _} = aecore_suite_utils:mine_micro_block_emptying_mempool_or_fail(ParentNodeName),
@@ -1306,6 +1299,7 @@ wait_for_commitments_in_pool_but_allow_other_txs(Node, CNode, Cnt) ->
         fun(Pool) -> 
             {ok, TopH} = aec_headers:hash_header(rpc(Node, aec_chain, top_header, [])),
             ExpectedCommitment = aeser_api_encoder:encode(key_block_hash, TopH),
+
             TxsCnt =
                 length(
                     lists:filter(
