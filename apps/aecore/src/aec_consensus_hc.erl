@@ -209,10 +209,7 @@ state_pre_transform_key_node(Node, PrevNode, Trees) ->
                      aeser_api_encoder:encode(key_block_hash, PrevHash)]),
     case Height > 0 of
         true ->
-            TxEnv = aetx_env:tx_env_from_key_header(PrevHeader,
-                                                    PrevHash,
-                                                    aec_headers:time_in_msecs(PrevHeader),
-                                                    aec_headers:prev_hash(PrevHeader)),
+            {TxEnv, _} = aetx_env:tx_env_and_trees_from_hash(aetx_transaction, PrevHash),
             %% TODO: discuss which is the correct height to pass: the new or the
             %% previous one. At this point since there is no key block hash yet, it
             %% makes sense to base the tx call on the previous height altogether
