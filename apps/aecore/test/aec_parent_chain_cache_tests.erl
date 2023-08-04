@@ -69,7 +69,7 @@ produce_commitments_test_() ->
             unmock_parent_connector()
      end,
      [  {"No commitments before the startheight", fun no_commitments_before_start/0},
-        {"Post genesis commitments before start seing blocks on the child chain", fun post_initial_commitments/0},
+        {"No commitments before seing blocks on the child chain", fun do_not_post_commitments_without_child_block/0},
         {"Post commitments according to child hash", fun post_commitments/0},
         {"No commitments if stopped", fun no_commitments_if_stopped/0},
         {"Stopping and starting block production dictates commitments emmitting", fun block_production_dictates_commitments/0}
@@ -246,21 +246,32 @@ no_commitments_before_start() ->
     ?TEST_MODULE:stop(),
     ok.
 
-post_initial_commitments() ->
+do_not_post_commitments_without_child_block() ->
     CacheMaxSize = 20,
     StartHeight = 200,
     ChildTop0 = 0,
     meck:expect(aec_chain, top_header, fun() -> header(ChildTop0) end),
-    ParentTop = StartHeight,
     expect_stakers([?ALICE, ?BOB, ?CAROL]),
     expect_keys([?ALICE, ?BOB]),
-    set_parent_chain_top(ParentTop),
+    set_parent_chain_top(StartHeight),
     {ok, _CachePid} = start_cache(StartHeight, CacheMaxSize, true),
     GenesisHash = aeser_api_encoder:encode(key_block_hash, height_to_hash(0)),
+    ParentHeight0 = StartHeight + 1,
+    set_parent_chain_top(ParentHeight0),
+    ?TEST_MODULE:post_block(block_by_height(ParentHeight0)),
+    timer:sleep(10),
+    {ok, #{ child_start_height := StartHeight,
+            top_height         := _ParentHeight0,
+            child_top_height   := ChildTop0}} = ?TEST_MODULE:get_state(),
+    [GenesisHash] = collect_commitments(?ALICE),
+    [GenesisHash] = collect_commitments(?BOB),
+    [] = collect_commitments(?CAROL),
+    [] = collect_commitments(?DAVE),
+    meck:reset(aec_parent_connector),
     %% populate the cache and start making commitments
     lists:foreach(
-        fun(Idx) ->
-            ParentHeight = ParentTop + Idx,
+        fun(Offset) ->
+            ParentHeight = StartHeight + Offset,
             set_parent_chain_top(ParentHeight),
             Block = block_by_height(ParentHeight),
             ?TEST_MODULE:post_block(Block),
@@ -269,14 +280,14 @@ post_initial_commitments() ->
             {ok, #{ child_start_height := StartHeight,
                     top_height         := ParentHeight,
                     child_top_height   := ChildTop0}} = ?TEST_MODULE:get_state(),
-            [GenesisHash] = collect_commitments(?ALICE),
-            [GenesisHash] = collect_commitments(?BOB),
+            [] = collect_commitments(?ALICE),
+            [] = collect_commitments(?BOB),
             [] = collect_commitments(?CAROL),
             [] = collect_commitments(?DAVE),
             meck:reset(aec_parent_connector),
             ok
         end,
-        lists:seq(0, _TODO = 10)),
+        lists:seq(2, 10)),
     ?TEST_MODULE:stop(),
     ok.
 
@@ -450,7 +461,7 @@ start_cache(StartHeight, MaxSize) ->
     start_cache(StartHeight, MaxSize, false).
 
 start_cache(StartHeight, MaxSize, IsPublishingCommitments) ->
-    Args = [StartHeight, MaxSize, 0, IsPublishingCommitments],
+    Args = [StartHeight, MaxSize, true, IsPublishingCommitments],
     gen_server:start_link({local, ?TEST_MODULE}, ?TEST_MODULE, Args, []).
 
 height_to_hash(Height) when Height < 0 -> height_to_hash(0);
