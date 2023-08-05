@@ -184,7 +184,6 @@ recent_cache_trim_key_header(_) -> ok.
 keyblocks_for_target_calc() -> 0.
 keyblock_create_adjust_target(Block0, []) ->
     Height = aec_blocks:height(Block0),
-    epoch_sync:info("ASDF ADJUST HEIGHT ~p",[Height]),
     {ok, Stake} = aeu_ets_cache:lookup(?ETS_CACHE_TABLE, added_stake),
     Block = aec_blocks:set_target(Block0, aeminer_pow:integer_to_scientific(Stake)),
     {ok, Block}.
@@ -204,9 +203,6 @@ state_pre_transform_key_node(Node, PrevNode, Trees) ->
     Beneficiary = aec_block_insertion:node_beneficiary(Node),
     {ok, PrevHash} = aec_headers:hash_header(PrevHeader),
     Height = aec_block_insertion:node_height(Node),
-    epoch_sync:info("ASDF AGH Start election for height ~p, prev node has height ~p and hash ~p",
-                    [Height, aec_block_insertion:node_height(PrevNode),
-                     aeser_api_encoder:encode(key_block_hash, PrevHash)]),
     case Height > 0 of
         true ->
             {TxEnv, _} = aetx_env:tx_env_and_trees_from_hash(aetx_transaction, PrevHash),
@@ -216,15 +212,11 @@ state_pre_transform_key_node(Node, PrevNode, Trees) ->
             PCHeight = pc_height(Height),
             case aec_parent_chain_cache:get_block_by_height(PCHeight) of
                 {error, not_in_cache} ->
-                    epoch_sync:info("ASDF AGH Height ~p not synced parent chain block ~p",
-                                    [Height, PCHeight]),
                     aec_conductor:throw_error(parent_chain_block_not_synced);
                 {ok, Block} ->
                     Entropy = aec_parent_chain_block:hash(Block),
                     CommitmentsSophia = encode_commitments(Block),
                     {ok, Commitments} = aec_parent_chain_block:commitments(Block),
-                    epoch_sync:info("ASDF AGH Parent chain block height ~p, has the following commitments ~p", 
-                                    [PCHeight, Commitments]),
                     {ok, CD} = aeb_fate_abi:create_calldata("elect",
                                                             [aefa_fate_code:encode_arg({string, Entropy}),
                                                             CommitmentsSophia
@@ -234,11 +226,9 @@ state_pre_transform_key_node(Node, PrevNode, Trees) ->
                         {ok, Trees1, Call} ->
                             case aeb_fate_encoding:deserialize(aect_call:return_value(Call)) of
                                 {tuple, {{address, Beneficiary}, AddedStake}} -> %% same beneficiary!
-                                    epoch_sync:info("ASDF AGH height ~p correct leader ~p",[Height, Beneficiary]),
                                     cache(Beneficiary, AddedStake),
                                     Trees1;
                                 {tuple, {{address, OtherBeneficiary}, _AddedStake}} -> %% lazy leader
-                                    epoch_sync:info("ASDF AGH height ~p lazy leader ~p, correct is ~p",[Height, OtherBeneficiary, Beneficiary]),
                                     elect_lazy_leader(Beneficiary, TxEnv, Trees) %% initial trees!!!
                             end;
                         {error, What} ->
@@ -305,7 +295,6 @@ genesis_transform_trees(Trees0, #{}) ->
 genesis_raw_header() ->
     GenesisProtocol = genesis_protocol_version(),
     GenesisStartTime = genesis_start_time(),
-    lager:warning("ASDF GENESIS START TIME [~p]", [GenesisStartTime]),
     aec_headers:new_key_header(
         0,
         aec_governance:contributors_messages_hash(),
@@ -380,22 +369,6 @@ generate_key_header_seal(_, Candidate, PCHeight, #{expected_key_block_rate := _E
 
 set_key_block_seal(KeyBlock, Seal) ->
     aec_blocks:set_key_seal(KeyBlock, Seal).
-
-call_elect_next_or_lazy_leader(PCBlock, TxEnv, Trees) ->
-    Entropy = aec_parent_chain_block:hash(PCBlock),
-    CommitmentsSophia = encode_commitments(PCBlock),
-    {ok, CD} = aeb_fate_abi:create_calldata("elect_next",
-                                            [aefa_fate_code:encode_arg({string, Entropy}),
-                                             CommitmentsSophia
-                                            ]),
-    CallData = aeser_api_encoder:encode(contract_bytearray, CD),
-    {ok, _Trees1, Call} = call_consensus_contract_(?ELECTION_CONTRACT,
-                                                    TxEnv, Trees,
-                                                    CallData,
-                                                    "elect_next",
-                                                    0),
-    {tuple, {{address, Leader}, Stake}}  = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
-    {Leader, Stake}.
 
 nonce_for_sealing(Header) ->
     Height = aec_headers:height(Header),
@@ -607,8 +580,6 @@ next_beneficiary() ->
     case aec_parent_chain_cache:get_block_by_height(PCHeight) of
         {ok, Block} ->
             {ok, Commitments} = aec_parent_chain_block:commitments(Block),
-            epoch_sync:info("ASDF AGH elect_next for height ~p, Parent chain block height ~p, has the following commitments ~p", 
-                            [NextHeight, PCHeight, Commitments]),
             Entropy = aec_parent_chain_block:hash(Block),
             CommitmentsSophia = encode_commitments(Block),
             {ok, CD} = aeb_fate_abi:create_calldata("elect_next",
@@ -619,30 +590,22 @@ next_beneficiary() ->
             try call_consensus_contract_(?ELECTION_CONTRACT, TxEnv, Trees, CallData, "elect_next", 0) of
                 {ok, _Trees1, Call} ->
                     {tuple, {{address, Leader}, Stake}}  = aeb_fate_encoding:deserialize(aect_call:return_value(Call)),
-                    epoch_sync:info("ASDF AGH elect_next for height ~p chose leader ~p, stake ~p", 
-                                    [NextHeight, aeser_api_encoder:encode(account_pubkey, Leader), Stake]),
                     SignModule = get_sign_module(),
                     case SignModule:set_candidate(Leader) of
                         {error, key_not_found} ->
-                            epoch_sync:info("ASDF AGH elect_next elected ~p and we don't have its keys", [Leader]), 
                             timer:sleep(1000),
                             {error, not_leader};
                         ok ->
-                            epoch_sync:info("ASDF AGH elect_next elected ~p (yey)", [Leader]), 
                             {ok, Leader}
                     end;
                 {error, What} ->
-                    epoch_sync:error("ASDF AGH elect_next failed with ~p", [What]), 
                     timer:sleep(1000),
                     {error, not_leader}
             catch error:{consensus_call_failed, {error, What}} ->
                     timer:sleep(1000),
-                    epoch_sync:error("ASDF AGH elect_next failed bad with ~p", [What]), 
                     {error, not_leader}
             end;
         {error, _Err} ->
-            epoch_sync:debug("ASDF Unable to pick the next leader for height ~p, parent height ~p; reason is ~p",
-                        [NextHeight, PCHeight, _Err]),
             lager:debug("Unable to pick the next leader for height ~p, parent height ~p; reason is ~p",
                         [NextHeight, PCHeight, _Err]),
             timer:sleep(1000),
@@ -662,10 +625,8 @@ allow_lazy_leader() ->
     PCHeight = pc_height(Height),
     case aec_parent_chain_cache:get_block_by_height(PCHeight) of
         {error, not_in_cache} ->
-            lager:info("ASDF TOO EARLY FOR LAZY LEADER ~p", [Height]),
             false;
         {ok, _} ->
-            lager:info("ASDF RIGHT TIME FOR LAZY LEADER ~p", [Height]),
             {true, lazy_leader_time_delta()}
     end.
 
@@ -829,7 +790,6 @@ encode_commitments(Block) ->
             end,
             #{},
             Commitments),
-    epoch_sync:info("ASDF AGH Commitments ~p", [Commitments1]),
     aeb_fate_data:make_map(Commitments1).
 
 elect_lazy_leader(Beneficiary, TxEnv, Trees) ->
@@ -843,7 +803,7 @@ elect_lazy_leader(Beneficiary, TxEnv, Trees) ->
                 {tuple, {{address, Beneficiary}, AddedStake}} -> %% same beneficiary!
                     cache(Beneficiary, AddedStake),
                     Trees2;
-                {error, What} ->
+                What ->
                     %% maybe a softer approach than crash and burn?
                     aec_conductor:throw_error({failed_to_elect_new_leader, What})
             end;

@@ -56,9 +56,7 @@ get_top_block_header(Host, Port) ->
             get_request(<<"/v3/key-blocks/current">>, Host, Port, 5000),
         {ok, Hash, PrevHash, Height}
     catch error:{badmatch, {error, not_found}} -> {error, not_found};
-          E:R ->
-            lager:warning("ASDF get top header failed with ~p, ~p", [E, R]),
-            {error, {E, R}}
+          E:R -> {error, {E, R}}
     end.
 
 get_key_block_header(Hash, Host, Port) ->

@@ -667,8 +667,6 @@ assert_height_delta(undefined, Height, TopHeight) ->
     Height >= ( TopHeight - gossip_allowed_height_from_top() ).
 
 update_state_tree(Node, State, Ctx) ->
-    epoch_sync:info("ASDF prev hash ~p", [aec_block_insertion:ctx_prev(Ctx)]),
-
     {ok, Trees, ForkInfoIn} = get_state_trees_in(Node, aec_block_insertion:ctx_prev(Ctx), true),
     {ForkInfo, MicSibHeaders, KeySibHeaders} = maybe_set_new_fork_id(Node, ForkInfoIn, State),
     State1 = update_found_pof(Node, MicSibHeaders, State, Ctx),
@@ -777,13 +775,10 @@ handle_top_block_change(OldTopNode, NewTopDifficulty, Node, Events, State) ->
                     %% Difficulty might not have changed if it is an
                     %% extension of micro blocks.
                     State1 = update_main_chain(OldTopHash, NewTopHash, ForkHash, State),
-                    epoch_sync:info("ASDF NOT detected a fork", []),
                     {State1, Events};
                 false ->
                     %% We have a fork. Compare the difficulties.
                     {ok, OldTopDifficulty} = db_find_difficulty(OldTopHash),
-                    epoch_sync:info("ASDF detected a fork, old top difficulty: ~p, new top difficulty ~p",
-                                    [OldTopDifficulty, NewTopDifficulty]),
                     case OldTopDifficulty >= NewTopDifficulty of
                         true ->
                             State1 = set_top_block_node(OldTopNode, State), %% Reset
@@ -837,10 +832,7 @@ assert_state_hash_valid(Trees, Node) ->
             ExpectedBeneficiary = node_beneficiary(Node),
             Height = node_height(Node),
             Mod = aec_consensus:get_genesis_consensus_module(),
-            ActualBeneficiary = Mod:beneficiary(),
-
-            epoch_sync:info("ASDF AGH _height ~p ExpectedBeneficiary ~p, ActualBeneficiary ~p",
-                            [Height, ExpectedBeneficiary, ActualBeneficiary]);
+            ActualBeneficiary = Mod:beneficiary();
         false -> pass
     end,
     case RootHash =:= Expected of

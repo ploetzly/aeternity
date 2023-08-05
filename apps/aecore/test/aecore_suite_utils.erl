@@ -925,19 +925,12 @@ wait_for_height_(Node, Height, TimeoutPerBlock) ->
             undefined -> 0;
             Header -> aec_headers:height(Header)
         end,
-    ct:log("ASDF DELETE ME PLEASE: TopHeight ~p, ExpectedHeight ~p", [TopHeight, Height]),
     case TopHeight >= Height of
         true -> % reached height
             ok;
         false ->
             case wait_for_new_block(TimeoutPerBlock) of
                 {error, timeout_waiting_for_block} ->
-                    CurrentH =
-                        case rpc:call(Node, aec_chain, top_header, []) of
-                            undefined -> undefined;
-                            H -> aec_headers:height(H)
-                        end,
-                    ct:log("ASDF DELETE ME PLEASE: current height is ~p", [CurrentH]),
                     {error, timeout_waiting_for_block, {top, TopHeight}, {waiting_for, Height}};
                 ok ->
                     wait_for_height_(Node, Height, TimeoutPerBlock)

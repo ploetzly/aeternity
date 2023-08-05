@@ -168,7 +168,6 @@ handle_request_('GetTopHeader', _, _Context) ->
 
 
 handle_request_('GetCurrentKeyBlock', _Req, _Context) ->
-    lager:info("ASDF, GetCurrentKeyBlock!!!!", []),
     case aec_chain:top_key_block() of
         {ok, Block} ->
             case aec_blocks:height(Block) of

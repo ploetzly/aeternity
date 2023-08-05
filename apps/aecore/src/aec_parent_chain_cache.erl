@@ -48,7 +48,7 @@
 -record(state,
     {
         child_top_height                        :: non_neg_integer(),
-        child_top_hash                          :: binary(),
+        child_top_hash                          :: aec_blocks:block_header_hash(),
         child_start_height                      :: non_neg_integer(),
         max_size                                :: non_neg_integer(),
         blocks              = #{}               :: #{non_neg_integer() => aec_parent_chain_block:block()},
@@ -122,7 +122,7 @@ init([StartHeight, Size, BlockProducing, EnabledCommitments]) ->
     aec_events:subscribe(chain_sync),
     TopHeader = aec_chain:top_header(),
     ChildHeight = aec_headers:height(TopHeader), 
-    ChildHash = aec_headers:hash_header(TopHeader),
+    {ok, ChildHash} = aec_headers:hash_header(TopHeader),
     true = is_integer(ChildHeight),
     self() ! initialize_cache,
     {ok, #state{child_start_height      = StartHeight,
@@ -164,9 +164,6 @@ handle_call(_Request, _From, State) ->
 -spec handle_cast(any(), state()) -> {noreply, state()}.
 handle_cast({post_block, Block}, #state{} = State0) ->
     State = post_block(Block, State0),
-    Height = aec_parent_chain_block:height(Block),
-    lager:warning("ASDF post_block with height ~p, old top: ~p, new top: ~p",
-                  [Height, State0#state.top_height,State#state.top_height]),
     State1 =
         case State#state.top_height > State0#state.top_height of
             true ->
@@ -211,12 +208,9 @@ handle_info({gproc_ps_event, top_changed, #{info := #{block_type := key,
         end,
     TargetHeight = target_parent_height(State2),
     aec_parent_connector:request_block_by_height(TargetHeight),
-    EncHash = aeser_api_encoder:encode(key_block_hash, Hash),
-    lager:warning("ASDF received top_changed for height ~p, hash ~p", [Height, EncHash]),
     State = maybe_post_commitments(Hash, State2),
     {noreply, State};
 handle_info({gproc_ps_event, chain_sync, #{info := {is_syncing, IsSyncing}}}, State0) ->
-    lager:info("ASDF IS SYNCING ~p ", [IsSyncing]),
     State1 = State0#state{is_syncing = IsSyncing},
     State = 
         case IsSyncing =:= false andalso not State0#state.posted_commitment of
@@ -224,7 +218,6 @@ handle_info({gproc_ps_event, chain_sync, #{info := {is_syncing, IsSyncing}}}, St
                 {ok, TopBlock} = aec_chain:top_key_block(),
                 {ok, TopHash} = aec_blocks:hash_internal_representation(TopBlock),
                 Height = aec_blocks:height(TopBlock),
-                lager:warning("ASDF received sync_done for height ~p", [Height]),
                 _State1 = maybe_post_commitments(TopHash, State1);
             false ->
                 lager:info("Not posting commitment", []),
