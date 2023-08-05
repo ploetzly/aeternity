@@ -63,11 +63,13 @@ get_top_block_header(Host, Port) ->
 
 get_key_block_header(Hash, Host, Port) ->
     try
-        {ok, #{<<"hash">> := Hash,
-               <<"prev_key_hash">> := PrevHash,
-               <<"height">> := Height}} =
-            get_request(<<"/v3/key-blocks/hash/", Hash/binary>>, Host, Port, 5000),
-        {ok, Hash, PrevHash, Height}
+        case get_request(<<"/v3/key-blocks/hash/", Hash/binary>>, Host, Port, 5000) of
+            {ok, #{<<"hash">> := Hash,
+                <<"prev_key_hash">> := PrevHash,
+                <<"height">> := Height}} ->
+                {ok, Hash, PrevHash, Height};
+            {error, not_found} -> {error, not_found}
+        end
     catch E:R ->
         {error, {E, R}}
     end.
