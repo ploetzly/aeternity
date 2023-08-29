@@ -15,6 +15,7 @@
         , ns_cache_backend/0
         , oracles_backend/0
         , oracles_cache_backend/0
+        , chain_poi_backend/0
         , dirty_accounts_backend/0
         , dirty_calls_backend/0
         , dirty_channels_backend/0
@@ -23,6 +24,7 @@
         , dirty_ns_cache_backend/0
         , dirty_oracles_backend/0
         , dirty_oracles_cache_backend/0
+        , dirty_chain_poi_backend/0
         ]).
 
 -behavior(aeu_mp_trees_db).
@@ -66,6 +68,9 @@ dirty_channels_backend() ->
 contracts_backend() ->
     aeu_mp_trees_db:new(db_spec(contracts)).
 
+chain_poi_backend() ->
+    aeu_mp_trees_db:new(db_spec(chain_poi)).
+
 -spec dirty_contracts_backend() -> aeu_mp_trees_db:db().
 dirty_contracts_backend() ->
     aeu_mp_trees_db:new(db_spec({dirty, contracts})).
@@ -101,6 +106,9 @@ oracles_cache_backend() ->
 -spec dirty_oracles_cache_backend() -> aeu_mp_trees_db:db().
 dirty_oracles_cache_backend() ->
     aeu_mp_trees_db:new(db_spec({dirty, oracles_cache})).
+
+dirty_chain_poi_backend() ->
+    aeu_mp_trees_db:new(db_spec({dirty, chain_poi})).
 
 %%%===================================================================
 %%% Internal functions

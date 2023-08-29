@@ -29,6 +29,7 @@
          write_block/1,
          write_block/2,
          write_block_state/6,
+         write_chain_poi_state/2,
          update_trees_and_block_state/2,
          write_discovered_pof/2,
          write_genesis_hash/1,
@@ -59,6 +60,7 @@
          get_block_state/1,
          get_block_state/2,
          get_block_state_partial/3,
+         get_chain_poi_state/1,
          get_block_from_micro_header/2
         ]).
 
@@ -257,6 +259,8 @@ tables_(Mode) ->
       , ?TAB(aec_discovered_pof)
       , ?TAB(aec_signal_count)
       , ?TAB(aec_peers)
+      , ?TAB(aec_chain_poi)
+      , ?TAB(aec_chain_poi_state)
       ]).
 
 add_gc_extra_tabs(Tabs) ->
@@ -937,6 +941,17 @@ write_block_state(Hash, Trees, AccDifficulty, ForkId, Fees, Fraud) ->
                                         , fraud = Fraud },
            write(BlockState)
        end).
+
+write_chain_poi_state(Hash, RootHash) ->
+    ?t(write(#aec_chain_poi_state{key = Hash, value = RootHash})).
+
+get_chain_poi_state(Hash) ->
+    case ?t(read(aec_chain_poi_state, Hash)) of
+        [#aec_chain_poi_state{value = Value}] ->
+            {value, Value};
+        [] ->
+            none
+    end.
 
 update_trees_and_block_state(Hash, Trees) ->
     ensure_transaction(
@@ -1708,6 +1723,12 @@ handle_table_errors(_Tables, _Mode, []) ->
     ok;
 handle_table_errors(Tables, Mode, [{on_write_error_present, Table} | Tl]) ->
     remove_on_write_error(Table),
+    handle_table_errors(Tables, Mode, Tl);
+handle_table_errors(Tables, Mode, [{missing_table, aec_chain_poi = Table} | Tl]) ->
+    new_table_migration(Table, Tables),
+    handle_table_errors(Tables, Mode, Tl);
+handle_table_errors(Tables, Mode, [{missing_table, aec_chain_poi_state = Table} | Tl]) ->
+    new_table_migration(Table, Tables),
     handle_table_errors(Tables, Mode, Tl);
 handle_table_errors(Tables, Mode, [{missing_table, aec_signal_count = Table} | Tl]) ->
     %% The table is new in node version 5.1.0.

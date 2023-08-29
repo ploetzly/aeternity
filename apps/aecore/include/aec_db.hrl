@@ -12,6 +12,8 @@
 -record(aec_channel_state      , {key, value}).
 -record(aec_name_service_cache , {key, value}).
 -record(aec_name_service_state , {key, value}).
+-record(aec_chain_poi          , {key, value}).
+-record(aec_chain_poi_state    , {key, value}).
 
 -record(aec_signed_tx          , {key :: SignedTxHash :: aec_hash:hash(), value :: aetx_sign:signed_tx() | tuple()}).
 -record(aec_tx_location        , {key :: SignedTxHash :: aec_hash:hash(), value :: BlockHash :: aec_hash:hash()}).

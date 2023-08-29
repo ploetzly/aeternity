@@ -22,6 +22,7 @@
 
 -export([ fork_resistance_active/0
         , fork_resistance_configured/0
+        , chain_sync_is_done/0
         ]).
 
 -export([ init/1
