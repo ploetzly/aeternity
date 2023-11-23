@@ -942,6 +942,19 @@ write_block_state(Hash, Trees, AccDifficulty, ForkId, Fees, Fraud) ->
            write(BlockState)
        end).
 
+init_block_state_snap(Hash, TreeState, AccDifficulty, ForkId, Fees, Fraud) ->
+    ?t(case read(aec_block_state, Hash) of
+           [#aec_block_state{}] ->
+               {error, state_exists};
+           [] ->
+               write(#aec_block_state{ key = Hash
+                                     , value = {wip, TreeState}
+                                     , difficulty = AccDifficulty
+                                     , fork_id = ForkId
+                                     , fees = Fees
+                                     , fraud = Fraud })
+       end).
+
 write_chain_poi_state(Hash, RootHash) ->
     ?t(write(#aec_chain_poi_state{key = Hash, value = RootHash})).
 
@@ -1175,10 +1188,13 @@ get_block_state_partial(Hash, DirtyBackend, Elements) ->
     get_block_state_(Hash, DeserializeFun).
 
 get_block_state_(Hash, DeserializeFun) ->
-    ?t(begin
-           [#aec_block_state{value = Trees}] =
-               read(aec_block_state, Hash),
-           DeserializeFun(Trees)
+    ?t(case read(aec_block_state, Hash) of
+           [#aec_block_state{value = Trees}] when is_binary(Trees) ->
+               DeserializeFun(Trees);
+           [_] ->
+               error(incomplete_block_state);
+           [] ->
+               error(no_block_state)
        end).
 
 find_block_state(Hash) ->

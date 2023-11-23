@@ -1819,17 +1819,17 @@
                 },
                 "poi" : {
                     "type" : "object",
-                    "description" : "Maintaining Proofs of Inclusion for block hashes"
+                    "description" : "Maintaining Proofs of Inclusion for block hashes",
                     "additionalProperties" : false,
                     "properties" : {
                         "enable" : {
                             "type" : "boolean",
-                            "description" : "Whether to maintain POI information to serve other nodes"
+                            "description" : "Whether to maintain POI information to serve other nodes",
                             "default" : false
                         },
                         "height_multiple" : {
                             "type" : "integer",
-                            "description" : "Given value N, publish info for heights where (H rem N) == 0"
+                            "description" : "Given value N, publish info for heights where (H rem N) == 0",
                             "default" : 1000
                         },
                         "lag" : {

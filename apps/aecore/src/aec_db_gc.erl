@@ -610,23 +610,11 @@ get_mpt(Tree, Hash) ->
 
 get_mpt_from_hash(Tree, Hash) ->
     {value, Trees} = aec_db:find_block_state(Hash, _DirtyBackend = true),
-    case tree_hash(Tree, Trees) of
+    case aec_trees:tree_hash(Tree, Trees) of
         {error, empty} ->
             empty;
         {ok, RootHash} ->
             aeu_mp_trees:new(RootHash, db(Tree, Trees))
-    end.
-
-tree_hash(Tree, Trees) ->
-    case Tree of
-        accounts      -> aec_trees:accounts_hash(Trees);
-        calls         -> aec_trees:calls_hash(Trees);
-        contracts     -> aec_trees:contracts_hash(Trees);
-        oracles       -> aec_trees:oracles_hash(Trees);
-        oracles_cache -> aec_trees:oracles_cache_hash(Trees);
-        channels      -> aec_trees:channels_hash(Trees);
-        ns            -> aec_trees:ns_hash(Trees);
-        ns_cache      -> aec_trees:ns_cache_hash(Trees)
     end.
 
 db(Tree, Trees) ->

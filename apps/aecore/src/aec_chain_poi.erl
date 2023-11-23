@@ -214,7 +214,7 @@ serialize(Height) ->
     case poi_tree_at_height(Height) of
         {ok, Tree} ->
             Hashes = [genesis_hash(), hash_at_height(Height)],
-            Poi0 = aec_poi:new(aec_mtrees:root_hash(Tree)),
+            Poi0 = aec_poi:new(ok(aeu_mtrees:root_hash(Tree))),
             Poi1 = lists:foldl(
                      fun(Hash, Acc) ->
                              ok(aec_poi:add_poi(Hash, Tree, Acc))

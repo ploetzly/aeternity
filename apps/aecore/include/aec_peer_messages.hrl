@@ -28,6 +28,10 @@
 -define(MSG_TX_POOL_SYNC_GET,    22).
 -define(MSG_TX_POOL_SYNC_FINISH, 23).
 
+-define(MSG_GET_TREE_ROOTS, 30).
+-define(MSG_TREE_ROOTS,     31).
+-define(MSG_GET_LEAVES,     32).
+-define(MSG_LEAVES,         33).
 
 -define(RESPONSE_VSN, 1).
 -define(PING_VSN_1, 1).
@@ -51,6 +55,10 @@
 -define(TX_POOL_SYNC_UNFOLD_VSN, 1).
 -define(TX_POOL_SYNC_GET_VSN,    1).
 -define(TX_POOL_SYNC_FINISH_VSN, 1).
+-define(GET_TREE_ROOTS_VSN, 1).
+-define(TREE_ROOTS_VSN,     1).
+-define(GET_LEAVES_VSN,     1).
+-define(LEAVES_VSN,         1).
 -define(GET_NODE_INFO_VSN, 1).
 -define(NODE_INFO_VSN, 1).
 -define(CLOSE_VSN, 1).

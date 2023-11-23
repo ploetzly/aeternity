@@ -172,6 +172,8 @@ tag(txps_init)            -> ?MSG_TX_POOL_SYNC_INIT;
 tag(txps_unfold)          -> ?MSG_TX_POOL_SYNC_UNFOLD;
 tag(txps_get)             -> ?MSG_TX_POOL_SYNC_GET;
 tag(txps_finish)          -> ?MSG_TX_POOL_SYNC_FINISH;
+tag(tree_roots)           -> ?MSG_GET_TREE_ROOTS;
+tag(get_leaves)           -> ?MSG_GET_LEAVES;
 tag(get_node_info)        -> ?MSG_GET_NODE_INFO;
 tag(node_info)            -> ?MSG_NODE_INFO;
 tag(close)                -> ?MSG_CLOSE.
@@ -219,6 +221,10 @@ latest_vsn(txps_init)            -> ?TX_POOL_SYNC_INIT_VSN;
 latest_vsn(txps_unfold)          -> ?TX_POOL_SYNC_UNFOLD_VSN;
 latest_vsn(txps_get)             -> ?TX_POOL_SYNC_GET_VSN;
 latest_vsn(txps_finish)          -> ?TX_POOL_SYNC_FINISH_VSN;
+latest_vsn(get_tree_roots)       -> ?GET_TREE_ROOTS_VSN;
+latest_vsn(tree_roots)           -> ?TREE_ROOTS_VSN;
+latest_vsn(get_leaves)           -> ?GET_LEAVES_VSN;
+latest_vsn(leaves)               -> ?LEAVES_VSN;
 latest_vsn(get_node_info)        -> ?GET_NODE_INFO_VSN;
 latest_vsn(node_info)            -> ?NODE_INFO_VSN;
 latest_vsn(close)                -> ?CLOSE_VSN.
@@ -506,6 +512,25 @@ serialization_template(txps_get, ?TX_POOL_SYNC_GET_VSN) ->
     [{tx_hashes, [binary]}];
 serialization_template(txps_finish, ?TX_POOL_SYNC_FINISH_VSN) ->
     [{done, bool}];
+serialization_template(get_roots, ?TREE_ROOTS_VSN) ->
+    [{height, int}];
+serialization_template(roots, ?TREE_ROOTS_VSN) ->
+    [{roots_at_height, [#{items => [ {height, int}
+                                   , {roots, #{items => [ {name, binary}
+                                                        , {hash, binary} ]}
+                                      }]
+                         }]
+      }];
+serialization_template(get_leaves, ?GET_LEAVES_VSN) ->
+    [ {hash, binary}
+    , {tree, binary}
+    , {root, binary}
+    , {keys, [binary]} ];
+serialization_template(leaves, ?LEAVES_VSN) ->
+    [ {#{items => [ {key, binary}
+                  , {value, binary}
+                  , {proof, binary} ]}
+      }];
 serialization_template(peer, ?PEER_VSN) ->
     [ {host, binary}
     , {port, int}

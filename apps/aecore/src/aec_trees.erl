@@ -41,6 +41,8 @@
          ns_cache_hash/1,
          oracles_hash/1,
          oracles_cache_hash/1]).
+%% generalized version
+-export([tree_hash/2]).
 
 -export([ deserialize_from_db/2
         , serialize_for_db/1
@@ -49,6 +51,7 @@
         , serialize_to_client/1
         , deserialize_from_binary_without_backend/1
         , deserialize_from_db_partial/3
+        , deserialize_to_tree_hashes/1
         ]).
 
 -export([ensure_account/2]).
@@ -468,13 +471,7 @@ deserialize_from_db_partial(Bin, DirtyBackend, ElementsToLoad)
     , {oracles_hash, Oracles}
     , {oracles_cache_hash, OraclesCache}
     , {accounts_hash, Accounts}
-    ] = lists:map(fun db_deserialize_hash/1,
-                  aeser_chain_objects:deserialize(
-                    trees_db,
-                    ?AEC_TREES_VERSION,
-                    db_serialization_template(?AEC_TREES_VERSION),
-                    Bin
-                   )),
+    ] = deserialize_to_tree_hashes(Bin),
     Backend = case DirtyBackend of false -> new_with_backend; true -> new_with_dirty_backend end,
     lists:foldl(
         fun(Element, AccumTrees) ->
@@ -500,6 +497,15 @@ deserialize_from_db_partial(Bin, DirtyBackend, ElementsToLoad)
               , oracles = not_loaded
               , accounts = not_loaded},
         ElementsToLoad).
+
+deserialize_to_tree_hashes(Bin) ->
+    lists:map(fun db_deserialize_hash/1,
+              aeser_chain_objects:deserialize(
+                trees_db,
+                ?AEC_TREES_VERSION,
+                db_serialization_template(?AEC_TREES_VERSION),
+                Bin
+               )).
 
 -spec serialize_for_db(trees()) -> binary().
 serialize_for_db(#trees{} = Trees) ->
@@ -611,6 +617,18 @@ internal_hash(Trees, {calls_hash, CallsRootHash}) ->
             (pad_empty(oracles_hash(Trees)))   /binary
           >>,
     aec_hash:hash(state_trees, Bin).
+
+tree_hash(Tree, Trees) ->
+    case Tree of
+        accounts      -> accounts_hash(Trees);
+        calls         -> calls_hash(Trees);
+        contracts     -> contracts_hash(Trees);
+        oracles       -> oracles_hash(Trees);
+        oracles_cache -> oracles_cache_hash(Trees);
+        channels      -> channels_hash(Trees);
+        ns            -> ns_hash(Trees);
+        ns_cache      -> ns_cache_hash(Trees)
+    end.
 
 accounts_hash(Trees) ->
     aec_accounts_trees:root_hash(accounts(Trees)).
