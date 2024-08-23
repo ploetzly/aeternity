@@ -920,6 +920,11 @@ apply_node_transactions(Node, PrevNode, Trees, ForkInfo, State) ->
     case node_is_micro_block(Node) of
         true ->
             #fork_info{fees = FeesIn} = ForkInfo,
+            %% Here would like to add in Consensus module additional state updates
+            %% such as pinning "proof". This is done by a contract call
+            %% "pin_reward" which updates the contract state tree
+            %% Validators can call "pin_status" in the contract
+            %% and get the data out if the stakeholder had pinned
             Trees1 = Consensus:state_pre_transform_micro_node(Node, Trees),
             apply_micro_block_transactions(Node, FeesIn, Trees1);
         false ->
@@ -943,7 +948,8 @@ apply_node_transactions(Node, PrevNode, Trees, ForkInfo, State) ->
                 ok ->
                     Delay  = aec_governance:beneficiary_reward_delay(),
                     case Height > aec_block_genesis:height() + Delay of
-                        true  -> {grant_fees(Node, Trees3, Delay, FraudStatus, State), TotalFees, no_events()};
+                        true  -> %% for HC call grant_hc_fees
+                                  {grant_fees(Node, Trees3, Delay, FraudStatus, State), TotalFees, no_events()};
                         false -> {Trees3, TotalFees, no_events()}
                     end;
                 {error, Reason} ->
@@ -987,6 +993,13 @@ find_one_predecessor([N|Left], Node) ->
 %%
 %% NOTE: If the restriction of reporting a miner in the next
 %% generation is lifted, we need to do something more elaborate.
+
+grant_hc_fees(Node, Trees, Delay, FraudStatus, State) ->
+   %% Shall we split the fees between stake holders??
+   %% Do we want a Delay here as well?
+   %% Is there any Fraudstatus involved??
+   grant_fees(Node, Trees, Delay, FraudStatus, State).
+
 
 grant_fees(Node, Trees, Delay, FraudStatus, _State) ->
     Consensus = aec_block_insertion:node_consensus(Node),

@@ -251,6 +251,20 @@ state_pre_transform_key_node(Node, PrevNode, Trees) ->
                     Entropy = aec_parent_chain_block:hash(Block),
                     CommitmentsSophia = encode_commitments(Block),
                     NetworkId = aec_parent_chain_block:encode_network_id(aec_governance:get_network_id()),
+
+                    %% If right block (final block in child epoch)
+                    %% Add contract call to post stake proof, even if such proof is not present,
+                    %% to update the actual reward for staking:
+                    %% Call contract ?REWARD_CONTRACT with "get_pin_reward", which returns an PinReward sum
+                    %%
+                    %% call ?REWARD_CONTRACT with "pin_reward(Beneficiary, ParentChainBlockHash, ParentChainTxHash, PostedData)"
+                    %%    Contract has endpoints to retrieve that data later on for validators
+                    %%    As side effect reset reward amount
+                    %% In case there is no Txhash final, just post "pin_reward()" (if multi arity exists)
+                    %% Update contract state Tree
+                    %%
+                    %% Spend PinAward to Beneficiary
+
                     {ok, CD} = aeb_fate_abi:create_calldata("elect",
                                                             [aefa_fate_code:encode_arg({string, Entropy}),
                                                              CommitmentsSophia,
