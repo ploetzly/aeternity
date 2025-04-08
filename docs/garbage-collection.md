@@ -1,3 +1,5 @@
+# 12. Garbage Collection
+
 # Introduction
 
 This document describes how garbage collection works in the Aeternity node, and how to
